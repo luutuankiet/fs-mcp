@@ -28,3 +28,15 @@ packages = ["src/fs_mcp"]
 dev = [
     "pytest>=8.0.0",
 ]
+
+
+[tool.semantic_release]
+# This tells the tool to update the 'version' field in [project]
+version_toml = ["pyproject.toml:project.version"]
+
+# This tells the tool how to build the package AFTER updating the version
+build_command = "python -m build"
+
+# (Optional) If you want to keep a version string in your code, add this:
+# version_variables = ["src/fs_mcp/__init__.py:__version__"]
+

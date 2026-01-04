@@ -24,7 +24,6 @@ def initialize(directories: List[str]):
         try:
             p = Path(d).expanduser().resolve()
             if not p.exists() or not p.is_dir():
-                # Just warn in logs, don't crash entire server if one dir is bad
                 print(f"Warning: Skipping invalid directory: {p}")
                 continue
             ALLOWED_DIRS.append(p)
@@ -90,6 +89,31 @@ def read_text_file(path: str, head: Optional[int] = None, tail: Optional[int] = 
         return f"Error: File {path} appears to be binary. Use read_media_file instead."
     except Exception as e:
         return f"Error reading file: {str(e)}"
+
+@mcp.tool()
+def read_multiple_files(paths: List[str]) -> str:
+    """
+    Read the contents of multiple files simultaneously.
+    Returns path and content separated by dashes.
+    """
+    results = []
+    for p_str in paths:
+        try:
+            path_obj = validate_path(p_str)
+            # Check if it's binary or directory before reading
+            if path_obj.is_dir():
+                content = "Error: Is a directory"
+            else:
+                try:
+                    content = path_obj.read_text(encoding='utf-8')
+                except UnicodeDecodeError:
+                    content = "Error: Binary file. Use read_media_file."
+            
+            results.append(f"File: {p_str}\n{content}")
+        except Exception as e:
+            results.append(f"File: {p_str}\nError: {e}")
+            
+    return "\n\n---\n\n".join(results)
 
 @mcp.tool()
 def read_media_file(path: str) -> dict:

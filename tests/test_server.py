@@ -27,6 +27,24 @@ def test_write_and_read(temp_env):
     content = server.read_text_file.fn(str(target))
     assert content == "Hello MCP"
 
+def test_read_multiple_files(temp_env):
+    """Test reading multiple files"""
+    f1 = temp_env / "f1.txt"
+    f2 = temp_env / "f2.txt"
+    
+    server.write_file.fn(str(f1), "Content 1")
+    server.write_file.fn(str(f2), "Content 2")
+    
+    # Test valid + invalid path mixed
+    paths = [str(f1), str(f2), str(temp_env / "missing.txt")]
+    result = server.read_multiple_files.fn(paths)
+    
+    assert "Content 1" in result
+    assert "Content 2" in result
+    assert "missing.txt" in result
+    assert "Error" in result # For the missing file
+    assert "---" in result
+
 def test_list_directory(temp_env):
     """Test directory listing"""
     (temp_env / "A").mkdir()

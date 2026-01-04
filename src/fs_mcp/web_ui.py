@@ -36,7 +36,7 @@ st.sidebar.code("\n".join(str(d) for d in server.ALLOWED_DIRS))
 
 # --- 3. TOOL DISCOVERY & SCHEMA EXPORT ---
 KNOWN_TOOLS = [
-    "list_directory", "list_directory_with_sizes", "read_text_file", 
+    "list_directory", "list_directory_with_sizes", "read_text_file", "read_multiple_files",
     "read_media_file", "write_file", "create_directory", 
     "move_file", "search_files", "get_file_info", 
     "directory_tree", "edit_file", "list_allowed_directories"
@@ -161,7 +161,7 @@ with tab_form:
                 st.write("Edits (JSON List)")
                 val = st.text_area("JSON", value='[{"oldText": "foo", "newText": "bar"}]')
                 form_inputs[name] = val # Parse later
-            elif name == 'exclude_patterns':
+            elif name in ['exclude_patterns', 'paths']:
                 val = st.text_area(f"{name} (one per line)")
                 form_inputs[name] = val
             elif is_bool:
@@ -177,7 +177,7 @@ with tab_form:
                 processed = {}
                 for k, v in form_inputs.items():
                     # Handle lists
-                    if k == 'exclude_patterns':
+                    if k in ['exclude_patterns', 'paths']:
                         processed[k] = [x.strip() for x in v.split('\n') if x.strip()]
                     # Handle JSON fields
                     elif k == 'edits':
@@ -199,6 +199,7 @@ for name, param in sig.parameters.items():
     if name in ['ctx', 'context']: continue
     if name in ['path', 'source', 'destination']: default_args[name] = str(server.ALLOWED_DIRS[0])
     elif name == 'content': default_args[name] = "Line 1\nLine 2"
+    elif name == 'paths': default_args[name] = [str(server.ALLOWED_DIRS[0])]
     else: default_args[name] = ""
 
 json_template = json.dumps(default_args, indent=2)

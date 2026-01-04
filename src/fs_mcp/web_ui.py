@@ -4,6 +4,7 @@ import inspect
 import json
 import base64
 import asyncio
+import copy
 from typing import Optional, Union, List, Dict, Any
 from pathlib import Path
 from dataclasses import asdict
@@ -12,6 +13,13 @@ from streamlit_js_eval import streamlit_js_eval
 
 # --- 1. SETUP & CONFIG ---
 st.set_page_config(page_title="FS-MCP", layout="wide", page_icon="📂")
+
+# [NEW] Import Google GenAI transformers for schema standardization
+try:
+    from google.genai import _transformers
+except ImportError:
+    st.error("❌ 'google-genai' library not found. Please run: uv add google-genai")
+    st.stop()
 
 try:
     from fs_mcp import server
@@ -41,18 +49,66 @@ st.sidebar.code("\n".join(str(d) for d in server.ALLOWED_DIRS))
 # --- 3. TOOL DISCOVERY & SCHEMA EXPORT ---
 tools = {}
 tool_schemas = []
+gemini_schemas = []
+
+def prune_for_gemini_strictness(obj: Any) -> Any:
+    """
+    Recursively removes keys that are valid in JSON Schema/OpenAPI 
+    but strictly forbidden by the Gemini Function Calling API.
+    """
+    # Keys forbidden by Gemini's strict validator
+    FORBIDDEN_KEYS = {"default", "title", "property_ordering", "propertyOrdering"}
+
+    if isinstance(obj, dict):
+        return {
+            k: prune_for_gemini_strictness(v) 
+            for k, v in obj.items() 
+            if k not in FORBIDDEN_KEYS
+        }
+    elif isinstance(obj, list):
+        return [prune_for_gemini_strictness(i) for i in obj]
+    return obj
+
+def convert_to_gemini_schema(tool_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Uses official google-genai transformers + strict pruning to adapt 
+    schemas for Gemini Function Declarations.
+    """
+    # 1. Deep copy the input schema
+    raw_schema = copy.deepcopy(tool_dict.get("input_schema", {}))
+    
+    # 2. Use the official library transformer to handle anyOf -> nullable
+    # This handles the complex logic.
+    _transformers.process_schema(raw_schema, client=None)
+    
+    # 3. [NEW] Strict Pruning
+    # Gemini rejects "default", "title", and "property_ordering"
+    clean_schema = prune_for_gemini_strictness(raw_schema)
+    
+    # 4. Ensure root type is object
+    if "type" not in clean_schema:
+        clean_schema["type"] = "object"
+    if "properties" not in clean_schema:
+        clean_schema["properties"] = {}
+
+    return {
+        "name": tool_dict["name"],
+        "description": tool_dict.get("description", ""),
+        "parameters": clean_schema
+    }
+
 
 try:
     # 1. Use the official inspect utility to get a structured server blueprint
     server_info = asyncio.run(inspect_fastmcp(server.mcp))
 
-    # 2. Convert the ToolInfo dataclasses to dictionaries using asdict()
+    # 2. Convert the ToolInfo dataclasses to dictionaries
     tool_schemas = [asdict(tool) for tool in server_info.tools]
 
-    # 3. Map the functions for the UI to execute
-    # Create a name-to-schema mapping for easier lookup
-    schema_map = {schema['name']: schema for schema in tool_schemas}
-    
+    # 3. [NEW] Generate Gemini-compatible schemas using the official library
+    gemini_schemas = [convert_to_gemini_schema(ts) for ts in tool_schemas]
+
+    # 4. Map the functions for the UI to execute
     for tool_info in server_info.tools:
         name = tool_info.name
         if hasattr(server, name):
@@ -68,8 +124,13 @@ except Exception as e:
     st.exception(e) 
     st.stop()
 
-with st.sidebar.expander("🔌 Tool Schemas (JSON)", expanded=False):
-    st.caption("Copy this to agent configuration:")
+# --- SIDEBAR: EXPORT SECTION ---
+with st.sidebar.expander("🔌 Gemini API Schemas", expanded=True):
+    st.caption("Copy this JSON for Gemini Function Declarations:")
+    st.code(json.dumps(gemini_schemas, indent=2), language="json")
+
+with st.sidebar.expander("⚙️ Raw OpenAI MCP Schemas", expanded=False):
+    st.caption("Internal MCP representation:")
     st.code(json.dumps(tool_schemas, indent=2), language="json")
 
 # --- 4. EXECUTION HANDLER ---
@@ -233,15 +294,15 @@ if trigger_run and execution_args is not None:
     with st.spinner("Running tool..."):
         res_raw, res_proto, dtype, err = execute_tool(fn, execution_args)
 
+    json_response = json.dumps(res_proto, indent=None)
+    escaped_json = json.dumps(json_response)
+    streamlit_js_eval(js_expressions=f"navigator.clipboard.writeText({escaped_json})")
     if err:
         st.error("Tool Execution Failed")
+        st.toast("Something went wrong - error copied to clipboard", icon="❌")
     else:
         st.success("Tool Execution Successful")
-        # --- AUTO-COPY LOGIC ---
-        json_response = json.dumps(res_proto, indent=None)
-        escaped_json = json.dumps(json_response)
-        streamlit_js_eval(js_expressions=f"navigator.clipboard.writeText({escaped_json})")
-        st.toast("🤖 Agent response copied to clipboard!")
+        st.toast("Tool response copied to clipboard!", icon="✅")
 
     col_human, col_agent = st.columns(2)
     

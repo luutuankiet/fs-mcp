@@ -79,15 +79,21 @@ Add this to your `claude_desktop_config.json`:
 
 | Tool | Description |
 |------|-------------|
-| `edit_file` | **Upgraded:** Robust find/replace with occurrence safety checks. |
-| `append_text` | **New:** Safe fallback for appending content to EOF. |
-| `read_multiple_files` | Reads content of multiple files. Essential for context loading. |
+| `list_allowed_directories` | List the directories this server is allowed to access. |
+| `list_directory` | Get a detailed listing of all files and directories. |
+| `list_directory_with_sizes` | Get listing with file sizes. |
 | `directory_tree` | **Fast:** Returns recursive JSON tree. Skips `.venv`/`.git` automatically. |
 | `search_files` | **Fast:** Recursive pattern discovery using `rglob`. |
-| `grounding_search` | Placeholder for custom RAG/Search implementations. |
-| `write_file` | Creates or overwrites files (atomic operations). |
-| `read_media_file` | Returns base64 encoded images/audio. |
 | `get_file_info` | Metadata retrieval (size, modified time, etc.). |
+| `read_text_file` | Read text file contents. |
+| `read_multiple_files` | Reads content of multiple files. Essential for context loading. |
+| `read_media_file` | Returns base64 encoded images/audio. |
+| `write_file` | Creates or overwrites files (atomic operations). |
+| `create_directory` | Create a new directory or ensure it exists. |
+| `move_file` | Move or rename files. |
+| `edit_file` | Robust find/replace with occurrence safety checks. |
+| `append_text` | Safe fallback for appending content to EOF. |
+| `grounding_search` | Placeholder for custom RAG/Search implementations. |
 
 ---
 

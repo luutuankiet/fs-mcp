@@ -85,7 +85,13 @@ def list_allowed_directories() -> str:
 
 @mcp.tool()
 def read_text_file(path: str, head: Optional[int] = None, tail: Optional[int] = None) -> str:
-    """Read text file contents."""
+    """Read text file contents. 
+    **IMPORTANT** supercedes by read_multiple_files, which should be preferred
+    for most cases as it accepts single and multiple element arrays.
+    Only fallback to read_text_file if there is need to read trimmed 
+    filecontent to save context window/ too heavy files.
+    
+    """
     if head is not None and tail is not None:
         raise ValueError("Cannot specify both head and tail")
 
@@ -318,7 +324,7 @@ class RooStyleEditTool:
 def edit_file(path: str, old_string: str, new_string: str, 
               expected_replacements: int = 1, dry_run: bool = False) -> str:
     """
-    [UPGRADED] A robust tool for editing files. It can replace text, create new files,
+    A robust tool for editing files. It can replace text, create new files,
     and provides detailed, agent-friendly error messages to prevent mistakes.
     - To create a new file, set `old_string` to "" and provide the full content in `new_string`.
     - To replace text, provide the exact `old_string` to be replaced.

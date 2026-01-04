@@ -32,5 +32,4 @@ dev = [
 
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"]
-assets = []
-publish_to_vcs = true
+build_command = false

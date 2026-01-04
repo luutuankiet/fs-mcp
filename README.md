@@ -12,8 +12,8 @@ If you're building agents or using tools like Claude Desktop, you know the strug
 
 **FS-MCP solves this.** It's a single, dependency-free (via `uv`) Python package that gives you:
 1.  **Strict Security**: Sandbox enforcement so agents can't touch `/etc/passwd` or escape via symlinks.
-2.  **Dual Mode**: A standard MCP server for agents, PLUS a built-in Streamlit Web UI for *you* to inspect and debug.
-3.  **Zero Config**: Run it instantly with `uvx`. No cloning required.
+2.  **Dual Mode by Default**: Launch a standard MCP server PLUS a built-in inspector Streamlit Web UI simultaneously. No more jumping through hoops with npm inspector clients.
+4.  **Zero Config**: Run it instantly with `uvx`. No cloning required.
 
 **The goal:** A filesystem tool that is robust enough for production agents but friendly enough for quick local debugging.
 
@@ -21,56 +21,52 @@ If you're building agents or using tools like Claude Desktop, you know the strug
 
 ## What You Get
 
-### 🤖 For Agents (Stdio Mode)
+### 🤖 For Agents (HTTP/Stdio Mode)
 A full suite of tools optimized for LLM consumption:
+- **`edit_file`**: Precise "Find and Replace" with `expected_replacements` validation. No more accidental file mangling.
+- **`append_text`**: A reliable fallback for dumping content to the end of files when diffs get too complex.
 - **`read_multiple_files`**: Read 10+ files in one turn (saves tokens & round-trips).
-- **`edit_file`**: Git-style diff patching (safer than overwriting).
-- **`search_files`**: Smart globbing that respects `.gitignore` patterns.
-- **`directory_tree`**: Recursive JSON tree views for understanding project structure.
+- **`directory_tree`**: High-performance recursive views with smart ignores (`.venv`, `.git`) and depth limits.
 
-### 👨‍💻 For Humans (Web UI Mode)
-Run with `--ui` and get a full-blown file explorer in your browser:
-- **Live Tool Testing**: Run tools manually before giving them to an agent.
-- **Protocol View**: See exactly what JSON the agent receives (great for debugging hallucinations).
-- **Schema Export**: One-click copy JSON schemas for your agent configuration.
-- **Remote Access**: Host it on a server (`0.0.0.0`) and debug files remotely.
-
-### 🛡️ Security First
-- **Allowlist Only**: You must explicitly list allowed directories.
-- **Path Traversal Protection**: Blocks `../../` attacks.
-- **Symlink Resolution**: Prevents symlinks from pointing outside the sandbox.
+### 👨‍💻 For Humans (Web UI Explorer)
+The built-in UI is now a first-class citizen:
+- **Auto-Copy Clipboard**: Successful tool responses are instantly copied to your clipboard. Run a tool in the UI, paste the result into Claude. Done.
+- **Native Schema Discovery**: Uses FastMCP's internal inspection to export 100% accurate JSON schemas for your agent configuration.
+- **Live Tool Testing**: Run tools manually with an interactive form to verify behavior.
 
 ---
 
 ## Quick Start
 
-### 1. Run Instantly (No Install)
-Using `uvx` (recommended), you can run this anywhere without polluting your python environment.
+### 1. Run Instantly
+By default, this command launches the **Web UI (8123)** and a **Background HTTP Server (8124)**.
 
-**Agent Mode (Stdio):**
 ```bash
-# Allow access only to your current project
-uvx --from fs-mcp fs-mcp .
+# Allow access to the current dir
+uvx fs-mcp .
 ```
 
-**Web UI Mode (Interactive):**
+### 2. Selective Launch (Flags)
+Want to disable a component? Use the inverted "No" flags:
 ```bash
-# Launch the explorer on localhost:8501
-uvx --from fs-mcp fs-mcp --ui .
+# UI Only
+fs-mcp --no-http .
+
+# HTTP Only (Headless)
+fs-mcp --no-ui .
 ```
 
-### 2. Configure Claude Desktop
+### 3. Configure Claude Desktop
 Add this to your `claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
-    "my-files": {
+    "fs-mcp": {
       "command": "uvx",
       "args": [
-        "--from", "fs-mcp", "fs-mcp",
-        "/Users/me/Projects/my-app",
-        "/Users/me/Documents/notes"
+        "--from", "fs-mcp", "fs-mcp", "--no-ui",
+        "/absolute/path/to/your/project"
       ]
     }
   }
@@ -83,61 +79,22 @@ Add this to your `claude_desktop_config.json`:
 
 | Tool | Description |
 |------|-------------|
+| `edit_file` | **Upgraded:** Robust find/replace with occurrence safety checks. |
+| `append_text` | **New:** Safe fallback for appending content to EOF. |
 | `read_multiple_files` | Reads content of multiple files. Essential for context loading. |
+| `directory_tree` | **Fast:** Returns recursive JSON tree. Skips `.venv`/`.git` automatically. |
+| `search_files` | **Fast:** Recursive pattern discovery using `rglob`. |
+| `grounding_search` | Placeholder for custom RAG/Search implementations. |
 | `write_file` | Creates or overwrites files (atomic operations). |
-| `edit_file` | Precise string replacement with diff output. |
-| `search_files` | Finds files matching glob patterns (e.g., `**/*.py`). |
-| `directory_tree` | Returns a nested JSON structure of folders. |
-| `list_directory_with_sizes` | Detailed listing with file sizes. |
 | `read_media_file` | Returns base64 encoded images/audio. |
-| `move_file` | Renames or moves files. |
-| `create_directory` | Recursive directory creation (`mkdir -p`). |
-
----
-
-## Remote Usage (SSH)
-
-Want to expose a remote server's filesystem to your local browser securely?
-
-1.  **On Remote Server:**
-    ```bash
-    uvx --from fs-mcp fs-mcp --ui --host 0.0.0.0 --port 9090 /path/to/expose
-    ```
-
-2.  **On Local Machine (SSH Tunnel):**
-    ```bash
-    ssh -L 9090:localhost:9090 user@remote-server
-    ```
-
-3.  **Open Browser:**
-    Go to `http://localhost:9090`. You now have a full GUI for your remote files.
-
----
-
-## Development
-
-Want to hack on this?
-
-```bash
-# Clone it
-git clone https://github.com/yourusername/fs-mcp.git
-cd fs-mcp
-
-# Install dependencies
-uv sync
-
-# Run tests
-uv run pytest
-
-# Run locally
-uv run fs-mcp --ui .
-```
+| `get_file_info` | Metadata retrieval (size, modified time, etc.). |
 
 ---
 
 ## License & Credits
 
-Built with ❤️ for the MCP Community.
+Built with ❤️ for the MCP Community by **luutuankiet**.
 Powered by **FastMCP** and **Streamlit**.
 
 **Now go build some agents.** 🚀
+

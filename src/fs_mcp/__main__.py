@@ -63,7 +63,7 @@ def main():
                 sys.executable, "-m", "streamlit", "run", str(ui_path),
                 "--server.address", args.host,
                 "--server.port", str(args.port),
-                "--", *dirs
+                "--", *[str(Path(d).resolve()) for d in dirs]
             ]
             print(f"🚀 Launching UI on http://{args.host}:{args.port}", file=sys.stderr)
             # This is a blocking call. The script waits here until Streamlit exits.

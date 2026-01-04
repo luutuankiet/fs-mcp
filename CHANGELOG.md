@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## v0.4.0 (2026-01-04)
+
+### Feature
+
+* feat: sync semantic release configuration ([`5258017`](https://github.com/luutuankiet/fs-mcp/commit/525801749d2c1890431d055819b750ddb4f35f42))
+
+### Fix
+
+* fix: sync semantic version in pyproject.toml ([`c8179e4`](https://github.com/luutuankiet/fs-mcp/commit/c8179e4ea595387eb67162227c7169a4760710fd))
+
 ## v0.3.0 (2026-01-04)
 
 ### Chore

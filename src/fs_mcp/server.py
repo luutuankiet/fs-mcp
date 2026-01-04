@@ -1,3 +1,4 @@
+from pydantic import BaseModel
 import os
 import base64
 import mimetypes
@@ -10,6 +11,10 @@ from fastmcp import FastMCP
 # --- Global Configuration ---
 ALLOWED_DIRS: List[Path] = []
 mcp = FastMCP("filesystem")
+
+class EditOperation(BaseModel):
+    oldText: str
+    newText: str
 
 def initialize(directories: List[str]):
     """Initialize the allowed directories configuration."""
@@ -218,22 +223,42 @@ def directory_tree(path: str, exclude_patterns: List[str] = []) -> str:
     return json.dumps(build(root), indent=2)
 
 @mcp.tool()
-def edit_file(path: str, edits: List[Dict[str, str]], dry_run: bool = False) -> str:
+def edit_file(path: str, edits: List[EditOperation], dry_run: bool = False) -> str:
     """Line-based file editing with diff preview."""
     import difflib
     p = validate_path(path)
-    with open(p, 'r', encoding='utf-8') as f: original = f.read()
-    modified = original
-    for edit in edits:
-        old = edit['oldText'].replace('\r\n', '\n')
-        new = edit['newText'].replace('\r\n', '\n')
-        if old not in modified: raise ValueError(f"Text not found: {old}")
-        modified = modified.replace(old, new, 1)
     
+    # Read the original file content and split into lines
+    with open(p, 'r', encoding='utf-8') as f:
+        original_content = f.read()
+    
+    original_lines = original_content.splitlines()
+    modified_lines = original_lines[:] # Create a mutable copy
+
+    # Process each edit operation on the list of lines
+    for edit_op in edits:
+        # The input from the agent is a dict, not a Pydantic model instance yet
+        old_text = edit_op['oldText']
+        new_text = edit_op['newText']
+        
+        try:
+            # Find the index of the exact line to replace
+            index_to_replace = modified_lines.index(old_text)
+            modified_lines[index_to_replace] = new_text
+        except ValueError:
+            # This error is raised if .index() doesn't find the item
+            raise ValueError(f"Line not found or already modified: '{old_text}'")
+
+    # Join the modified lines back into a single string for saving and diffing
+    modified_content = "\n".join(modified_lines)
+    
+    # Generate the diff between the original and modified content
     diff = "\n".join(difflib.unified_diff(
-        original.splitlines(), modified.splitlines(), 
+        original_content.splitlines(), modified_content.splitlines(), 
         fromfile="original", tofile="modified", lineterm=""
     ))
+    
     if not dry_run:
-        with open(p, 'w', encoding='utf-8') as f: f.write(modified)
+        with open(p, 'w', encoding='utf-8') as f:
+            f.write(modified_content)
     return diff

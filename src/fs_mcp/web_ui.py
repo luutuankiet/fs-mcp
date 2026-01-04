@@ -8,6 +8,7 @@ from typing import Optional, Union, List, Dict, Any
 from pathlib import Path
 from dataclasses import asdict
 from fastmcp.utilities.inspect import inspect_fastmcp
+from streamlit_js_eval import streamlit_js_eval
 
 # --- 1. SETUP & CONFIG ---
 st.set_page_config(page_title="FS-MCP", layout="wide", page_icon="📂")
@@ -229,17 +230,19 @@ with tab_compact:
 if trigger_run and execution_args is not None:
     st.divider()
     
-    # 1. Run
     with st.spinner("Running tool..."):
         res_raw, res_proto, dtype, err = execute_tool(fn, execution_args)
 
-    # 2. Display Status
     if err:
         st.error("Tool Execution Failed")
     else:
         st.success("Tool Execution Successful")
+        # --- AUTO-COPY LOGIC ---
+        json_response = json.dumps(res_proto, indent=None)
+        escaped_json = json.dumps(json_response)
+        streamlit_js_eval(js_expressions=f"navigator.clipboard.writeText({escaped_json})")
+        st.toast("🤖 Agent response copied to clipboard!")
 
-    # 3. Split View: Human vs Agent
     col_human, col_agent = st.columns(2)
     
     with col_human:
@@ -251,7 +254,6 @@ if trigger_run and execution_args is not None:
         elif dtype == "json":
             st.json(res_raw)
         else:
-            # Check for diffs
             text = str(res_raw)
             if text.startswith("---") or text.startswith("+++"):
                 st.code(text, language="diff")

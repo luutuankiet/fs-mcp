@@ -3,8 +3,11 @@ import sys
 import inspect
 import json
 import base64
+import asyncio
 from typing import Optional, Union, List, Dict, Any
 from pathlib import Path
+from dataclasses import asdict
+from fastmcp.utilities.inspect import inspect_fastmcp
 
 # --- 1. SETUP & CONFIG ---
 st.set_page_config(page_title="FS-MCP", layout="wide", page_icon="📂")
@@ -35,37 +38,34 @@ st.sidebar.header("Active Configuration")
 st.sidebar.code("\n".join(str(d) for d in server.ALLOWED_DIRS))
 
 # --- 3. TOOL DISCOVERY & SCHEMA EXPORT ---
-KNOWN_TOOLS = [
-    "list_directory", "list_directory_with_sizes", "read_text_file", "read_multiple_files",
-    "read_media_file", "write_file", "create_directory", 
-    "move_file", "search_files", "get_file_info", 
-    "directory_tree", "edit_file", "list_allowed_directories"
-]
-
 tools = {}
 tool_schemas = []
 
-for name in KNOWN_TOOLS:
-    if hasattr(server, name):
-        wrapper = getattr(server, name)
-        fn = wrapper.fn if hasattr(wrapper, 'fn') else wrapper
-        tools[name] = fn
-        
-        # Build Schema for export
-        schema = {
-            "name": name,
-            "description": inspect.getdoc(fn) or "",
-            "inputSchema": {"type": "object", "properties": {}}
-        }
-        sig = inspect.signature(fn)
-        for param_name, param in sig.parameters.items():
-            if param_name in ['ctx', 'context']: continue
-            param_type = "string"
-            if param.annotation == int: param_type = "integer"
-            if param.annotation == bool: param_type = "boolean"
-            if param.annotation == list: param_type = "array"
-            schema["inputSchema"]["properties"][param_name] = {"type": param_type}
-        tool_schemas.append(schema)
+try:
+    # 1. Use the official inspect utility to get a structured server blueprint
+    server_info = asyncio.run(inspect_fastmcp(server.mcp))
+
+    # 2. Convert the ToolInfo dataclasses to dictionaries using asdict()
+    tool_schemas = [asdict(tool) for tool in server_info.tools]
+
+    # 3. Map the functions for the UI to execute
+    # Create a name-to-schema mapping for easier lookup
+    schema_map = {schema['name']: schema for schema in tool_schemas}
+    
+    for tool_info in server_info.tools:
+        name = tool_info.name
+        if hasattr(server, name):
+            wrapper = getattr(server, name)
+            # Unwrap FastMCP decorators if needed
+            fn = wrapper.fn if hasattr(wrapper, 'fn') else wrapper
+            tools[name] = fn
+        else:
+            st.warning(f"Tool '{name}' has a schema but no matching function found in server.py")
+
+except Exception as e:
+    st.error(f"Failed to inspect MCP server: {e}")
+    st.exception(e) 
+    st.stop()
 
 with st.sidebar.expander("🔌 Tool Schemas (JSON)", expanded=False):
     st.caption("Copy this to agent configuration:")
@@ -152,7 +152,7 @@ with tab_form:
             is_bool = (annotation == bool) or (getattr(annotation, "__origin__", None) is Union and bool in getattr(annotation, "__args__", []))
             
             if name in ['path', 'source', 'destination']:
-                def_val = str(server.ALLOWED_DIRS[0])
+                def_val = str(server.ALLOWED_DIRS[0]) if server.ALLOWED_DIRS else ""
                 form_inputs[name] = st.text_input(name, value=def_val)
             elif name == 'content':
                 st.caption("Literal Content (WYSIWYG - Enter creates newlines)")
@@ -197,9 +197,10 @@ with tab_form:
 default_args = {}
 for name, param in sig.parameters.items():
     if name in ['ctx', 'context']: continue
-    if name in ['path', 'source', 'destination']: default_args[name] = str(server.ALLOWED_DIRS[0])
+    if name in ['path', 'source', 'destination']:
+        default_args[name] = str(server.ALLOWED_DIRS[0]) if server.ALLOWED_DIRS else ""
     elif name == 'content': default_args[name] = "Line 1\nLine 2"
-    elif name == 'paths': default_args[name] = [str(server.ALLOWED_DIRS[0])]
+    elif name == 'paths': default_args[name] = [str(server.ALLOWED_DIRS[0])] if server.ALLOWED_DIRS else []
     else: default_args[name] = ""
 
 json_template = json.dumps(default_args, indent=2)

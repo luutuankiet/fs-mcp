@@ -125,7 +125,7 @@ if not tools:
     st.error("No tools found.")
     st.stop()
 
-selected = st.sidebar.radio("Available Tools", list(tools.keys()))
+selected = st.sidebar.radio("Available Tools", sorted(tools.keys()))
 fn = tools[selected]
 sig = inspect.signature(fn)
 

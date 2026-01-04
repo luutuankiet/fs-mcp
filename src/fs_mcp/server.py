@@ -1,3 +1,4 @@
+import json
 from pydantic import BaseModel
 import os
 import base64
@@ -8,13 +9,21 @@ from typing import List, Optional, Literal, Dict
 from datetime import datetime
 from fastmcp import FastMCP
 
+from dataclasses import dataclass
+import difflib
+
+# The new structure for returning detailed results from the edit tool.
+@dataclass
+class EditResult:
+    success: bool
+    message: str
+    diff: Optional[str] = None
+    error_type: Optional[str] = None
+
 # --- Global Configuration ---
 ALLOWED_DIRS: List[Path] = []
 mcp = FastMCP("filesystem")
 
-class EditOperation(BaseModel):
-    oldText: str
-    newText: str
 
 def initialize(directories: List[str]):
     """Initialize the allowed directories configuration."""
@@ -189,17 +198,15 @@ def move_file(source: str, destination: str) -> str:
     return f"Moved {source} to {destination}"
 
 @mcp.tool()
-def search_files(path: str, pattern: str, exclude_patterns: List[str] = []) -> str:
-    """Recursively search for files matching glob pattern."""
+def search_files(path: str, pattern: str) -> str:
+    """Recursively search for files matching a glob pattern."""
     root = validate_path(path)
-    results = []
-    for r, d, f in os.walk(root):
-        d[:] = [x for x in d if not any(fnmatch.fnmatch(x, p) for p in exclude_patterns)]
-        for name in f:
-            if any(fnmatch.fnmatch(name, p) for p in exclude_patterns): continue
-            if fnmatch.fnmatch(name, pattern):
-                results.append(str(Path(r) / name))
-    return "\n".join(results) or "No matches found"
+    try:
+        results = [str(p.relative_to(root)) for p in root.rglob(pattern) if p.is_file()]
+        return "\n".join(results) or "No matches found."
+    except Exception as e:
+        return f"Error during search: {e}"
+
 
 @mcp.tool()
 def get_file_info(path: str) -> str:
@@ -209,56 +216,152 @@ def get_file_info(path: str) -> str:
     return f"Path: {p}\nType: {'Dir' if p.is_dir() else 'File'}\nSize: {format_size(s.st_size)}\nModified: {datetime.fromtimestamp(s.st_mtime)}"
 
 @mcp.tool()
-def directory_tree(path: str, exclude_patterns: List[str] = []) -> str:
-    """Get recursive JSON tree."""
-    import json
+def directory_tree(path: str, max_depth: int = 3, exclude_dirs: Optional[List[str]] = None) -> str:
+    """Get recursive JSON tree with depth limit and default excludes."""
     root = validate_path(path)
-    def build(current: Path) -> Dict:
-        name = current.name or str(current)
-        if any(fnmatch.fnmatch(name, p) for p in exclude_patterns): return None
-        node = {"name": name, "type": "directory" if current.is_dir() else "file"}
+    
+    # Use provided excludes or our new smart defaults
+    default_excludes = ['.git', '.venv', '__pycache__', 'node_modules', '.pytest_cache']
+    excluded = exclude_dirs if exclude_dirs is not None else default_excludes
+
+    def build(current: Path, depth: int) -> Optional[Dict]:
+        if depth > max_depth or current.name in excluded:
+            return None
+        
+        node = {"name": current.name, "type": "directory" if current.is_dir() else "file"}
+        
         if current.is_dir():
-            node["children"] = [c for c in [build(e) for e in sorted(current.iterdir(), key=lambda x: x.name)] if c]
+            children = []
+            try:
+                for entry in sorted(current.iterdir(), key=lambda x: x.name):
+                    child = build(entry, depth + 1)
+                    if child:
+                        children.append(child)
+                if children:
+                    node["children"] = children
+            except PermissionError:
+                node["error"] = "Permission Denied"
         return node
-    return json.dumps(build(root), indent=2)
+        
+    tree = build(root, 0)
+    return json.dumps(tree, indent=2)
+
+class RooStyleEditTool:
+    """
+    A robust, agent-friendly file editing tool that validates operations
+    before making changes to prevent common errors.
+    """
+    def count_occurrences(self, content: str, substr: str) -> int:
+        if substr == "": return 0
+        return content.count(substr)
+
+    def normalize_line_endings(self, content: str) -> str:
+        return content.replace('\r\n', '\n').replace('\r', '\n')
+    
+    def edit_file(self, file_path: str, old_string: str, new_string: str, 
+                  expected_replacements: int = 1, dry_run: bool = False) -> EditResult:
+        
+        p = validate_path(file_path)
+        
+        file_exists = p.exists()
+        is_new_file = not file_exists and old_string == ""
+
+        if not file_exists and not is_new_file:
+            return EditResult(success=False, message=f"File not found: {file_path}. To create a new file, old_string must be empty.", error_type="file_not_found")
+        
+        if file_exists and is_new_file:
+            return EditResult(success=False, message=f"File '{file_path}' already exists. Cannot create a new file when one already exists.", error_type="file_exists")
+        
+        original_content = ""
+        if file_exists:
+            try:
+                original_content = p.read_text(encoding='utf-8')
+            except Exception as e:
+                return EditResult(success=False, message=f"Failed to read file: {e}", error_type="read_error")
+
+        normalized_content = self.normalize_line_endings(original_content)
+        normalized_old = self.normalize_line_endings(old_string)
+        
+        if not is_new_file:
+            if old_string == new_string:
+                return EditResult(success=False, message="No changes to apply. The old_string and new_string are identical.", error_type="validation_error")
+            
+            occurrences = self.count_occurrences(normalized_content, normalized_old)
+            
+            if occurrences == 0:
+                return EditResult(success=False, message="No match found for the specified 'old_string'. Please ensure it matches exactly.", error_type="validation_error")
+            
+            if occurrences != expected_replacements:
+                return EditResult(success=False, message=f"Expected {expected_replacements} occurrence(s) but found {occurrences}. Please adjust your 'old_string' or 'expected_replacements' value.", error_type="validation_error")
+        
+        if is_new_file:
+            new_content = new_string
+        else:
+            # Note: This is a global replace, not line-by-line.
+            new_content = normalized_content.replace(normalized_old, new_string)
+        
+        diff_str = "\n".join(difflib.unified_diff(
+            original_content.splitlines(), new_content.splitlines(), 
+            fromfile=f"a/{file_path}", tofile=f"b/{file_path}", lineterm=""
+        ))
+        
+        if not dry_run:
+            try:
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(new_content, encoding='utf-8')
+            except Exception as e:
+                return EditResult(success=False, message=f"Failed to write to file: {e}", error_type="write_error")
+
+        return EditResult(success=True, message=f"Successfully edited '{file_path}'.", diff=diff_str)
 
 @mcp.tool()
-def edit_file(path: str, edits: List[EditOperation], dry_run: bool = False) -> str:
-    """Line-based file editing with diff preview."""
-    import difflib
+def edit_file(path: str, old_string: str, new_string: str, 
+              expected_replacements: int = 1, dry_run: bool = False) -> str:
+    """
+    [UPGRADED] A robust tool for editing files. It can replace text, create new files,
+    and provides detailed, agent-friendly error messages to prevent mistakes.
+    - To create a new file, set `old_string` to "" and provide the full content in `new_string`.
+    - To replace text, provide the exact `old_string` to be replaced.
+    - `expected_replacements` ensures you don't accidentally edit more lines than intended.
+    """
+    tool = RooStyleEditTool()
+    result = tool.edit_file(path, old_string, new_string, expected_replacements, dry_run)
+    
+    if result.success:
+        output = result.message
+        if result.diff:
+            output += f"\n\n--- DIFF ---\n{result.diff}"
+        return output
+    else:
+        # Raising an exception is the correct way to signal a tool error.
+        raise ValueError(f"Edit failed: {result.message} (Error type: {result.error_type})")
+
+
+@mcp.tool()
+def grounding_search(query: str) -> str:
+    """[NEW] A custom search tool. Accepts a natural language query and returns a grounded response."""
+    # This is a placeholder for a future RAG or other search implementation.
+    print(f"Received grounding search query: {query}")
+    return "DEVELOPER PLEASE UPDATE THIS WITH ACTUAL CONTENT"
+
+
+@mcp.tool()
+def append_text(path: str, content: str) -> str:
+    """
+    Append text to the end of a file. 
+    Use this as a fallback if edit_file fails to find a match.
+    """
     p = validate_path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"File not found: {path}. Cannot append to a non-existent file.")
     
-    # Read the original file content and split into lines
-    with open(p, 'r', encoding='utf-8') as f:
-        original_content = f.read()
-    
-    original_lines = original_content.splitlines()
-    modified_lines = original_lines[:] # Create a mutable copy
-
-    # Process each edit operation on the list of lines
-    for edit_op in edits:
-        # The input from the agent is a dict, not a Pydantic model instance yet
-        old_text = edit_op['oldText']
-        new_text = edit_op['newText']
+    # Ensure there is a newline at the start of the append if the file doesn't have one
+    # to avoid clashing with the existing last line.
+    with open(p, 'a', encoding='utf-8') as f:
+        # Check if we need a leading newline
+        if p.stat().st_size > 0:
+            f.write("\n")
+        f.write(content)
         
-        try:
-            # Find the index of the exact line to replace
-            index_to_replace = modified_lines.index(old_text)
-            modified_lines[index_to_replace] = new_text
-        except ValueError:
-            # This error is raised if .index() doesn't find the item
-            raise ValueError(f"Line not found or already modified: '{old_text}'")
+    return f"Successfully appended content to '{path}'."
 
-    # Join the modified lines back into a single string for saving and diffing
-    modified_content = "\n".join(modified_lines)
-    
-    # Generate the diff between the original and modified content
-    diff = "\n".join(difflib.unified_diff(
-        original_content.splitlines(), modified_content.splitlines(), 
-        fromfile="original", tofile="modified", lineterm=""
-    ))
-    
-    if not dry_run:
-        with open(p, 'w', encoding='utf-8') as f:
-            f.write(modified_content)
-    return diff

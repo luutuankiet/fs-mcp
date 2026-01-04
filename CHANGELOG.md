@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## v0.3.0 (2026-01-04)
+
+### Chore
+
+* chore: cleanup old artifacts &amp; update readme ([`1c2e192`](https://github.com/luutuankiet/fs-mcp/commit/1c2e1923051c81a2247d66af595d33f87ec1f360))
+
+### Feature
+
+* feat: uses google-genai to convert gemini-compatible json schema ([`e12a99b`](https://github.com/luutuankiet/fs-mcp/commit/e12a99b303be80ae17ff0e8b945c55513ec31b54))
+
 ## v0.2.0 (2026-01-04)
 
 ### Chore

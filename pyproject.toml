@@ -32,4 +32,4 @@ dev = [
 
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"]
-build_command = false
+build_command = "echo 'Build handled by GitHub Action'"

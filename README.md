@@ -1,14 +1,16 @@
 # filesystem-mcp 📂
 
-**A secure, production-grade filesystem server for the Model Context Protocol (MCP).**
-
-*Bridge your local files to LLMs safely. Works with Claude Desktop, Cursor, and any MCP-compliant agent.*
+**An interactive filesystem MCP server**
 
 ---
 
+
+https://github.com/user-attachments/assets/132acdd9-014c-4ba0-845a-7db74644e655
+
+
 ## Why This Exists
 
-If you're building agents or using tools like Claude Desktop, you know the struggle: giving an LLM access to your files is often "all or nothing" and setting up a proper server usually involves Node.js dependency hell.
+If you're building agents or using tools like gemini chat / google ai studio, you know the struggle: the webapp doesn't give you direct MCP tool use. Getting Gemini access to your project files is non-trivial and often involve manual copy-pasting.
 
 **FS-MCP solves this.** It's a single, dependency-free (via `uv`) Python package that gives you:
 1.  **Strict Security**: Sandbox enforcement so agents can't touch `/etc/passwd` or escape via symlinks.

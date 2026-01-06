@@ -41,12 +41,40 @@ The **`propose_and_review`** tool bridges the gap between agent proposals and hu
 **How it Works:**
 1. The agent calls `propose_and_review` with a code change.
 2. A VS Code window pops up showing the **Diff**.
-3. **To Approve:** Add `` at the very end of the file and Save.
+3. **To Approve:** Add a double newline at the very end of the file and Save.
 4. **To Review:** Just edit the code directly in the diff window and Save. The agent will receive your edits as feedback and try again!
 
-### 4. Agent-Safe Editing 🛡️
+```mermaid
+sequenceDiagram
+    participant User
+    participant Agent
+    participant MCP_Server
 
-Includes a **Roo-Code style `edit_file` tool** with `expected_replacements` validation. This prevents the agent from accidentally mangling your code if it hallucinates line numbers or context.
+    User->>Agent: "Propose an edit to README.md"
+    activate Agent
+    Agent->>MCP_Server: call propose_and_review(path="README.md", old, new)
+    activate MCP_Server
+    Note right of MCP_Server: Creates temp files & prints vscode_command.<br/>Now enters "watch loop", waiting for user to save.
+    MCP_Server-->>User: (via console) `code --diff ...`
+    
+    Note right of User: User opens VS Code, is happy with the change,<br/>adds a double newline to the end of the file, and saves.
+    
+    Note right of MCP_Server: Save detected! Checks file content.
+    MCP_Server-->>Agent: return { user_action: "APPROVE", message: "User approved. Call commit_review." }
+    deactivate MCP_Server
+
+    Note right of Agent: Agent sees "APPROVE" and knows what to do next.
+    Agent->>MCP_Server: call commit_review(session_path, original_path="README.md")
+    activate MCP_Server
+    Note right of MCP_Server: Copies 'future' file to original path,<br/>removes the trailing newlines,<br/>and cleans up the temp directory.
+    MCP_Server-->>Agent: return "Successfully committed changes."
+    deactivate MCP_Server
+    
+    Agent-->>User: "Changes have been committed!"
+    deactivate Agent
+```
+
+
 
 ---
 
@@ -110,7 +138,7 @@ uvx fs-mcp --no-ui --http-host 0.0.0.0 --http-port 8124 /app
 
 | Tool                       | Description                                                                |
 | -------------------------- | -------------------------------------------------------------------------- |
-| `propose_and_review`       | **Interactive Review:** Opens VS Code diff. Add `` to finalize.  |
+| `propose_and_review`       | **Interactive Review:** Opens VS Code diff. Add a double newline to finalize.  |
 | `commit_review`            | Finalizes the changes from an interactive review session.                  |
 | `read_multiple_files`      | Reads content of multiple files to save context window.                    |
 | `directory_tree`           | **Fast:** Returns recursive JSON tree. Skips `.venv`/`.git` automatically. |

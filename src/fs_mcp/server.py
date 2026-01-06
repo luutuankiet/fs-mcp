@@ -355,7 +355,7 @@ def propose_and_review(path: str, new_string: str, old_string: str = "", expecte
     vscode_command = f'code --diff "{current_file_path}" "{future_file_path}"'
     
     print(f"\n--- WAITING FOR HUMAN REVIEW ---\nPlease review the proposed changes in VS Code:\n\n{vscode_command}\n")
-    print(f'To approve, add "{APPROVAL_KEYWORD}" to the end of the file before saving.')
+    print(f'To approve, add a double newline to the end of the file before saving.')
     if IS_VSCODE_CLI_AVAILABLE:
         try:
             subprocess.Popen(vscode_command, shell=True)
@@ -370,12 +370,12 @@ def propose_and_review(path: str, new_string: str, old_string: str = "", expecte
     
     # --- Step 3: Interpret User's Action ---
     user_edited_content = future_file_path.read_text(encoding='utf-8')
-    user_content_stripped = user_edited_content.strip()
     response = {"session_path": str(temp_dir)}
 
-    if user_content_stripped.endswith(APPROVAL_KEYWORD):
-        # Remove only the keyword from the end
-        clean_content = user_content_stripped[: -len(APPROVAL_KEYWORD)].strip()
+    if user_edited_content.endswith("\n\n"):
+        # Remove trailing newlines
+        clean_content = user_edited_content.rstrip('\n')
+        # hey roo confirm if this triggers ONLY IF the user manually appends 2 newline in their review. otherwise we'll have false positive. 
         try:
             future_file_path.write_text(clean_content, encoding='utf-8')
             print("✅ Approval detected. You can safely close the diff view.")
@@ -408,7 +408,7 @@ def commit_review(session_path: str, original_path: str) -> str:
     if not future_file.exists():
         raise FileNotFoundError(f"Approved file not found in session: {future_file}")
     approved_content = future_file.read_text(encoding='utf-8')
-    final_content = approved_content.replace(APPROVAL_KEYWORD, "").strip()
+    final_content = approved_content.rstrip('\n')
     try:
         original_file.write_text(final_content, encoding='utf-8')
     except Exception as e:

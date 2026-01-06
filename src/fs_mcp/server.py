@@ -370,10 +370,12 @@ def propose_and_review(path: str, new_string: str, old_string: str = "", expecte
     
     # --- Step 3: Interpret User's Action ---
     user_edited_content = future_file_path.read_text(encoding='utf-8')
+    user_content_stripped = user_edited_content.strip()
     response = {"session_path": str(temp_dir)}
 
-    if APPROVAL_KEYWORD in user_edited_content:
-        clean_content = user_edited_content.replace(APPROVAL_KEYWORD, "").strip()
+    if user_content_stripped.endswith(APPROVAL_KEYWORD):
+        # Remove only the keyword from the end
+        clean_content = user_content_stripped[: -len(APPROVAL_KEYWORD)].strip()
         try:
             future_file_path.write_text(clean_content, encoding='utf-8')
             print("✅ Approval detected. You can safely close the diff view.")
@@ -443,4 +445,3 @@ def append_text(path: str, content: str) -> str:
         f.write(content)
         
     return f"Successfully appended content to '{path}'."
-

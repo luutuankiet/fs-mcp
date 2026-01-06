@@ -12,11 +12,11 @@ I built this because I was tired of jumping through hoops.
 
 The promise of the Model Context Protocol (MCP) is incredible, but the reality of using the standard filesystem server hit a few walls for my workflow:
 
-1. **The Container Gap:** I do most of my work in Docker. Connecting a local agent (like Claude Desktop) to a filesystem inside a container via Stdio is a networking nightmare.
-2. **The Free Tier Lockout:** I wanted to use the free tier of [Google AI Studio](https://aistudio.google.com/) to edit code, but you can't easily plug MCP into a web interface.
-3. **Schema Hell:** Even if you *do* copy-paste schemas into Gemini, they often break because Gemini's strict validation is only a [subset of the standard OpenAPI spec](https://ai.google.dev/gemini-api/docs/function-calling).
+1.  **The Container Gap:** I do most of my work in Docker. Connecting a local agent (like Claude Desktop) to a filesystem inside a container via Stdio is a networking nightmare.
+2.  **The Free Tier Lockout:** I wanted to use the free tier of [Google AI Studio](https://aistudio.google.com/) to edit code, but you can't easily plug MCP into a web interface.
+3.  **Schema Hell:** Even if you *do* copy-paste schemas into Gemini, they often break because Gemini's strict validation is only a [subset of the standard OpenAPI spec](https://ai.google.dev/gemini-api/docs/function-calling).
 
-**fs-mcp solves this.** It is a Python-based server built on `fastmcp` that treats "Human-in-the-Loop" as a first-class citizen.
+**fs-mcp solves this.** It is a Python-based server built on `fastmcp` that treats "Human-in-the-Loop" as a first-class citizen, enabling seamless and interactive collaboration between LLM agents and a developer's local environment.
 
 ---
 
@@ -33,6 +33,16 @@ No `npm install inspector`. I baked a **Streamlit Web UI** directly into the pac
 ### 3. Copy-Paste Gemini Schemas 📋
 
 The UI automatically sanitizes and translates your tool schemas specifically for **Google GenAI**. It strips forbidden keys (`default`, `title`, etc.) so you can paste function definitions directly into AI Studio and start coding for free.
+
+### 4. Human-in-the-Loop Diffing 🤝
+
+The **`propose_and_review`** tool bridges the gap between agent proposals and human oversight. It opens a VS Code diff window for you to inspect changes. 
+
+**How it Works:**
+1. The agent calls `propose_and_review` with a code change.
+2. A VS Code window pops up showing the **Diff**.
+3. **To Approve:** Add `` at the very end of the file and Save.
+4. **To Review:** Just edit the code directly in the diff window and Save. The agent will receive your edits as feedback and try again!
 
 ### 4. Agent-Safe Editing 🛡️
 
@@ -100,12 +110,15 @@ uvx fs-mcp --no-ui --http-host 0.0.0.0 --http-port 8124 /app
 
 | Tool                       | Description                                                                |
 | -------------------------- | -------------------------------------------------------------------------- |
-| `edit_file`                | **Star Feature:** Robust find/replace with occurrence safety checks.       |
+| `propose_and_review`       | **Interactive Review:** Opens VS Code diff. Add `` to finalize.  |
+| `commit_review`            | Finalizes the changes from an interactive review session.                  |
 | `read_multiple_files`      | Reads content of multiple files to save context window.                    |
 | `directory_tree`           | **Fast:** Returns recursive JSON tree. Skips `.venv`/`.git` automatically. |
 | `search_files`             | Recursive pattern discovery using `rglob`.                                 |
+| `grounding_search`         | **New:** Natural language query for grounded search results.               |
+| `read_text_file`           | Standard text reader (supports `head`/`tail` for large files).             |
+| `list_directory_with_sizes`| Detailed listing including formatted file sizes.                           |
 | `list_allowed_directories` | List security-approved paths.                                              |
-| `list_directory`           | Detailed file listings.                                                    |
 | `get_file_info`            | Metadata retrieval (size, modified time).                                  |
 | `read_media_file`          | Returns base64 encoded images/audio.                                       |
 | `write_file`               | Creates or overwrites files (atomic operations).                           |
@@ -121,4 +134,3 @@ Built with ❤️ for the MCP Community by **luutuankiet**.
 Powered by **FastMCP** and **Streamlit**.
 
 **Now go build some agents.** 🚀
-

@@ -5,8 +5,28 @@ import sys
 import subprocess
 import time
 from pathlib import Path
+from importlib import metadata
+import toml
+from pyfiglet import Figlet
+
+try:
+    # Use importlib.metadata to find the version of the installed package
+    __version__ = metadata.version("fs-mcp")
+except metadata.PackageNotFoundError:
+    # Fallback for when the package is not installed, e.g., in development
+    try:
+        pyproject_path = Path(__file__).parent.parent.parent / 'pyproject.toml'
+        with open(pyproject_path, 'r') as f:
+            data = toml.load(f)
+            __version__ = data['project']['version']
+    except (ImportError, FileNotFoundError, KeyError):
+        __version__ = "unknown"
 
 def main():
+    f = Figlet(font='slant')
+    banner = f.renderText('fs-mcp')
+    print(banner)
+    print(f"version {__version__}")
     parser = argparse.ArgumentParser(
         description="fs-mcp server. By default, runs both UI and HTTP servers.",
         formatter_class=argparse.RawTextHelpFormatter
@@ -69,7 +89,7 @@ def main():
             # This is a blocking call. The script waits here until Streamlit exits.
             subprocess.run(ui_cmd)
 
-        elif args.run_http:
+        elif args.run_http and http_process:
             # If ONLY the http server is running, we just need to wait.
             print("Background HTTP server is running. Press Ctrl+C to stop.", file=sys.stderr)
             http_process.wait()

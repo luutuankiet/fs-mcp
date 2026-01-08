@@ -52,7 +52,13 @@ def initialize(directories: List[str]):
     # else:
     #     print("ℹ️ VS Code CLI ('code') not found in PATH. Please open diff views manually.")
 
+    # a CWD, and the system's temporary directory for review sessions.
     raw_dirs = directories or [str(Path.cwd())]
+    
+    # Add the system's temp directory to the list of raw directories
+    # to allow access to review session files.
+    raw_dirs.append(tempfile.gettempdir())
+    
     for d in raw_dirs:
         try:
             p = Path(d).expanduser().resolve()
@@ -103,6 +109,20 @@ def validate_path(requested_path: str) -> Path:
         for allowed in ALLOWED_DIRS
     )
 
+    # If the path is in the temp directory, apply extra security checks.
+    temp_dir = Path(tempfile.gettempdir()).resolve()
+    if is_allowed and str(path_obj).startswith(str(temp_dir)):
+        # It must be inside a directory created by our review tool or by pytest.
+        path_str = str(path_obj)
+        is_review_dir = "mcp_review_" in path_str
+        is_pytest_dir = "pytest-" in path_str
+
+        if not (is_review_dir or is_pytest_dir):
+            is_allowed = False
+        # For review directories, apply stricter checks.
+        elif is_review_dir and not (path_obj.name.startswith("current_") or path_obj.name.startswith("future_")):
+            is_allowed = False
+            
     if not is_allowed:
         raise ValueError(f"Access denied: {requested_path} is outside allowed directories: {ALLOWED_DIRS}")
         
@@ -323,8 +343,10 @@ def propose_and_review(path: str, new_string: str, old_string: str = "", expecte
     Intents:
     1.  **Start New Review (Patch):** Provide `path`, `old_string`, `new_string`. Validates the patch against the original file.
     2.  **Start New Review (Full Rewrite):** Provide `path`, `new_string`, and leave `old_string` empty.
-    3.  **Continue Review (Contextual Patch):** Provide `session_path`, `old_string` (as the anchor), and `new_string` (as the replacement). This is the token-efficient mode.
-    4.  **Continue Review (Full Rewrite / Recovery):** Provide `session_path`, `new_string`, and the full content of the file as `old_string` to guarantee a match.
+    3.  **Continue Review (Contextual Patch):** Provide `path`, `session_path`, `old_string`, and `new_string`.
+    4.  **Continue Review (Full Rewrite / Recovery):** Provide `path`, `session_path`, `new_string`, and the full content of the file as `old_string`.
+
+    Note: `path` is always required to identify the file being edited, even when continuing a session.
 
     It blocks and waits for the user to save the file, then returns their action ('APPROVE' or 'REVIEW').
     """

@@ -340,13 +340,14 @@ APPROVAL_KEYWORD = "##APPROVE##"
 @mcp.tool()
 def propose_and_review(path: str, new_string: str, old_string: str = "", expected_replacements: int = 1, session_path: Optional[str] = None) -> str:
     """
-    Starts or continues an interactive review session using a VS Code diff view.
-    This smart tool adapts its behavior based on the arguments provided.
+    Starts or continues an interactive review session using a VS Code diff view. This smart tool adapts its behavior based on the arguments provided.
 
     Intents:
+
     1.  **Start New Review (Patch):** Provide `path`, `old_string`, `new_string`. Validates the patch against the original file.
     2.  **Start New Review (Full Rewrite):** Provide `path`, `new_string`, and leave `old_string` empty.
     3.  **Continue Review (Contextual Patch):** Provide `path`, `session_path`, `old_string`, and `new_string`.
+        *   **CRITICAL:** If the user modified the file in the previous turn (indicated by `user_feedback_diff`), `old_string` MUST match the text **as modified by the user**, not your previous `new_string`. You must apply the user's diff to your previous output to determine the correct `old_string` for this step.
     4.  **Continue Review (Full Rewrite / Recovery):** Provide `path`, `session_path`, `new_string`, and the full content of the file as `old_string`.
 
     Note: `path` is always required to identify the file being edited, even when continuing a session.

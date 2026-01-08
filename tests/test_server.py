@@ -24,8 +24,8 @@ def test_write_and_read(temp_env):
     assert target.exists()
     
     # Read
-    content = server.read_text_file.fn(str(target))
-    assert content == "Hello MCP"
+    content = server.read_files.fn([{"path": str(target)}])
+    assert "Hello MCP" in content
 
 def test_read_multiple_files(temp_env):
     """Test reading multiple files"""
@@ -36,8 +36,12 @@ def test_read_multiple_files(temp_env):
     server.write_file.fn(str(f2), "Content 2")
     
     # Test valid + invalid path mixed
-    paths = [str(f1), str(f2), str(temp_env / "missing.txt")]
-    result = server.read_multiple_files.fn(paths)
+    requests = [
+        {"path": str(f1)},
+        {"path": str(f2)},
+        {"path": str(temp_env / "missing.txt")}
+    ]
+    result = server.read_files.fn(requests)
     
     assert "Content 1" in result
     assert "Content 2" in result
@@ -53,3 +57,18 @@ def test_list_directory(temp_env):
     res = server.list_directory.fn(str(temp_env))
     assert "[DIR] A" in res
     assert "[FILE] B.txt" in res
+
+def test_relative_path_resolution(temp_env):
+    """Test that relative paths are resolved correctly."""
+    # Create a subdirectory and a file within it
+    sub_dir = temp_env / "sub"
+    sub_dir.mkdir()
+    target_file = sub_dir / "relative_test.txt"
+    target_file.touch()
+
+    # Attempt to validate the path using a relative path
+    # The server should resolve this relative to the temp_env
+    resolved_path = server.validate_path("sub/relative_test.txt")
+
+    # Assert that the resolved path is correct and absolute
+    assert resolved_path == target_file.resolve()

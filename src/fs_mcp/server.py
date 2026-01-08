@@ -70,21 +70,45 @@ def initialize(directories: List[str]):
     return ALLOWED_DIRS
 
 def validate_path(requested_path: str) -> Path:
-    """Security barrier: Ensures path is within ALLOWED_DIRS."""
-    try:
-        path_obj = Path(requested_path).expanduser().resolve()
-    except Exception:
-        path_obj = Path(requested_path).expanduser().absolute()
+    """
+    Security barrier: Ensures path is within ALLOWED_DIRS.
+    Handles both absolute and relative paths. Relative paths are resolved 
+    against the first directory in ALLOWED_DIRS.
+    """
     
+    # an 'empty' path should always resolve to the primary allowed directory
+    if not requested_path or requested_path == ".":
+        return ALLOWED_DIRS[0]
+
+    
+    p = Path(requested_path).expanduser()
+    
+    # If the path is relative, resolve it against the primary allowed directory.
+    if not p.is_absolute():
+        # Ensure the base directory for relative paths is always the first one.
+        base_dir = ALLOWED_DIRS[0]
+        p = base_dir / p
+
+    # --- Security Check: Resolve the final path and verify it's within bounds ---
+    try:
+        # .resolve() is crucial for security as it canonicalizes the path,
+        # removing any ".." components and resolving symlinks.
+        path_obj = p.resolve()
+    except Exception:
+        # Fallback for paths that might not exist yet but are being created.
+        path_obj = p.absolute()
+
     is_allowed = any(
         str(path_obj).startswith(str(allowed)) 
         for allowed in ALLOWED_DIRS
     )
+
     if not is_allowed:
-        raise ValueError(f"Access denied: {requested_path} is outside allowed directories.")
+        raise ValueError(f"Access denied: {requested_path} is outside allowed directories: {ALLOWED_DIRS}")
+        
     return path_obj
 
-def format_size(size_bytes: int) -> str:
+def format_size(size_bytes: float) -> str:
     for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
         if size_bytes < 1024.0:
             return f"{size_bytes:.2f} {unit}"
@@ -103,6 +127,7 @@ def read_files(files: List[FileReadRequest]) -> str:
     """
     Read the contents of multiple files simultaneously.
     Returns path and content separated by dashes.
+    Prefer relative paths.
     """
     results = []
     for file_request_data in files:
@@ -138,7 +163,7 @@ def read_files(files: List[FileReadRequest]) -> str:
 
 @mcp.tool()
 def read_media_file(path: str) -> dict:
-    """Read an image or audio file as base64."""
+    """Read an image or audio file as base64. Prefer relative paths."""
     path_obj = validate_path(path)
     mime_type, _ = mimetypes.guess_type(path_obj)
     if not mime_type: mime_type = "application/octet-stream"
@@ -154,7 +179,7 @@ def read_media_file(path: str) -> dict:
 
 @mcp.tool()
 def write_file(path: str, content: str) -> str:
-    """Create a new file or completely overwrite an existing file."""
+    """Create a new file or completely overwrite an existing file. Prefer relative paths."""
     path_obj = validate_path(path)
     with open(path_obj, 'w', encoding='utf-8') as f:
         f.write(content)
@@ -162,14 +187,14 @@ def write_file(path: str, content: str) -> str:
 
 @mcp.tool()
 def create_directory(path: str) -> str:
-    """Create a new directory or ensure it exists."""
+    """Create a new directory or ensure it exists. Prefer relative paths."""
     path_obj = validate_path(path)
     os.makedirs(path_obj, exist_ok=True)
     return f"Successfully created directory {path}"
 
 @mcp.tool()
 def list_directory(path: str) -> str:
-    """Get a detailed listing of all files and directories."""
+    """Get a detailed listing of all files and directories. Prefer relative paths."""
     path_obj = validate_path(path)
     if not path_obj.is_dir(): return f"Error: {path} is not a directory"
     
@@ -181,7 +206,7 @@ def list_directory(path: str) -> str:
 
 @mcp.tool()
 def list_directory_with_sizes(path: str) -> str:
-    """Get listing with file sizes."""
+    """Get listing with file sizes. Prefer relative paths."""
     path_obj = validate_path(path)
     if not path_obj.is_dir(): return f"Error: Not a directory"
     
@@ -197,7 +222,7 @@ def list_directory_with_sizes(path: str) -> str:
 
 @mcp.tool()
 def move_file(source: str, destination: str) -> str:
-    """Move or rename files."""
+    """Move or rename files. Prefer relative paths."""
     src = validate_path(source)
     dst = validate_path(destination)
     if dst.exists(): raise ValueError(f"Destination {destination} already exists")
@@ -206,7 +231,7 @@ def move_file(source: str, destination: str) -> str:
 
 @mcp.tool()
 def search_files(path: str, pattern: str) -> str:
-    """Recursively search for files matching a glob pattern."""
+    """Recursively search for files matching a glob pattern. Prefer relative paths."""
     root = validate_path(path)
     try:
         results = [str(p.relative_to(root)) for p in root.rglob(pattern) if p.is_file()]
@@ -217,7 +242,7 @@ def search_files(path: str, pattern: str) -> str:
 
 @mcp.tool()
 def get_file_info(path: str) -> str:
-    """Retrieve detailed metadata."""
+    """Retrieve detailed metadata. Prefer relative paths."""
     p = validate_path(path)
     s = p.stat()
     return f"Path: {p}\nType: {'Dir' if p.is_dir() else 'File'}\nSize: {format_size(s.st_size)}\nModified: {datetime.fromtimestamp(s.st_mtime)}"
@@ -236,10 +261,10 @@ def directory_tree(path: str, max_depth: int = 4, exclude_dirs: Optional[List[st
         if depth > max_depth or current.name in excluded:
             return None
         
-        node = {"name": current.name, "type": "directory" if current.is_dir() else "file"}
+        node: Dict[str, object] = {"name": current.name, "type": "directory" if current.is_dir() else "file"}
         
         if current.is_dir():
-            children = []
+            children: List[Dict] = []
             try:
                 for entry in sorted(current.iterdir(), key=lambda x: x.name):
                     child = build(entry, depth + 1)
@@ -341,9 +366,11 @@ def propose_and_review(path: str, new_string: str, old_string: str = "", expecte
             if temp_dir.exists(): shutil.rmtree(temp_dir)
             raise ValueError(f"Edit preparation failed: {prep_result.message} (Error type: {prep_result.error_type})")
 
-        current_file_path.write_text(prep_result.original_content, encoding='utf-8')
+        if prep_result.original_content is not None:
+            current_file_path.write_text(prep_result.original_content, encoding='utf-8')
         active_proposal_content = prep_result.new_content
-        future_file_path.write_text(active_proposal_content, encoding='utf-8')
+        if active_proposal_content is not None:
+            future_file_path.write_text(active_proposal_content, encoding='utf-8')
 
     # --- Step 2: Display, Launch, and Wait for Human ---
     vscode_command = f'code --diff "{current_file_path}" "{future_file_path}"'
@@ -380,7 +407,7 @@ def propose_and_review(path: str, new_string: str, old_string: str = "", expecte
     else:
         current_file_path.write_text(user_edited_content, encoding='utf-8')
         user_feedback_diff = "".join(difflib.unified_diff(
-            active_proposal_content.splitlines(keepends=True),
+            active_proposal_content.splitlines(keepends=True) if active_proposal_content is not None else [],
             user_edited_content.splitlines(keepends=True),
             fromfile=f"a/{future_file_path.name} (agent proposal)",
             tofile=f"b/{future_file_path.name} (user feedback)"
@@ -425,6 +452,7 @@ def append_text(path: str, content: str) -> str:
     """
     Append text to the end of a file. 
     Use this as a fallback if edit_file fails to find a match.
+    Prefer relative paths.
     """
     p = validate_path(path)
     if not p.exists():

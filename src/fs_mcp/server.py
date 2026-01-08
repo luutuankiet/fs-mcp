@@ -1,5 +1,13 @@
 import json
 from pydantic import BaseModel
+from typing import Optional
+
+class FileReadRequest(BaseModel):
+    path: str
+    head: Optional[int] = None
+    tail: Optional[int] = None
+
+
 import os
 import base64
 import mimetypes
@@ -39,12 +47,18 @@ def initialize(directories: List[str]):
     ALLOWED_DIRS.clear()
     
     IS_VSCODE_CLI_AVAILABLE = shutil.which('code') is not None
-    if IS_VSCODE_CLI_AVAILABLE:
-        print("✅ VS Code CLI detected. Diff windows will open automatically.")
-    else:
-        print("ℹ️ VS Code CLI ('code') not found in PATH. Please open diff views manually.")
+    # if IS_VSCODE_CLI_AVAILABLE:
+    #     print("✅ VS Code CLI detected. Diff windows will open automatically.")
+    # else:
+    #     print("ℹ️ VS Code CLI ('code') not found in PATH. Please open diff views manually.")
 
+    # a CWD, and the system's temporary directory for review sessions.
     raw_dirs = directories or [str(Path.cwd())]
+    
+    # Add the system's temp directory to the list of raw directories
+    # to allow access to review session files.
+    raw_dirs.append(tempfile.gettempdir())
+    
     for d in raw_dirs:
         try:
             p = Path(d).expanduser().resolve()
@@ -62,21 +76,59 @@ def initialize(directories: List[str]):
     return ALLOWED_DIRS
 
 def validate_path(requested_path: str) -> Path:
-    """Security barrier: Ensures path is within ALLOWED_DIRS."""
-    try:
-        path_obj = Path(requested_path).expanduser().resolve()
-    except Exception:
-        path_obj = Path(requested_path).expanduser().absolute()
+    """
+    Security barrier: Ensures path is within ALLOWED_DIRS.
+    Handles both absolute and relative paths. Relative paths are resolved 
+    against the first directory in ALLOWED_DIRS.
+    """
     
+    # an 'empty' path should always resolve to the primary allowed directory
+    if not requested_path or requested_path == ".":
+        return ALLOWED_DIRS[0]
+
+    
+    p = Path(requested_path).expanduser()
+    
+    # If the path is relative, resolve it against the primary allowed directory.
+    if not p.is_absolute():
+        # Ensure the base directory for relative paths is always the first one.
+        base_dir = ALLOWED_DIRS[0]
+        p = base_dir / p
+
+    # --- Security Check: Resolve the final path and verify it's within bounds ---
+    try:
+        # .resolve() is crucial for security as it canonicalizes the path,
+        # removing any ".." components and resolving symlinks.
+        path_obj = p.resolve()
+    except Exception:
+        # Fallback for paths that might not exist yet but are being created.
+        path_obj = p.absolute()
+
     is_allowed = any(
         str(path_obj).startswith(str(allowed)) 
         for allowed in ALLOWED_DIRS
     )
+
+    # If the path is in the temp directory, apply extra security checks.
+    temp_dir = Path(tempfile.gettempdir()).resolve()
+    if is_allowed and str(path_obj).startswith(str(temp_dir)):
+        # It must be inside a directory created by our review tool or by pytest.
+        path_str = str(path_obj)
+        is_review_dir = "mcp_review_" in path_str
+        is_pytest_dir = "pytest-" in path_str
+
+        if not (is_review_dir or is_pytest_dir):
+            is_allowed = False
+        # For review directories, apply stricter checks.
+        elif is_review_dir and not (path_obj.name.startswith("current_") or path_obj.name.startswith("future_")):
+            is_allowed = False
+            
     if not is_allowed:
-        raise ValueError(f"Access denied: {requested_path} is outside allowed directories.")
+        raise ValueError(f"Access denied: {requested_path} is outside allowed directories: {ALLOWED_DIRS}")
+        
     return path_obj
 
-def format_size(size_bytes: int) -> str:
+def format_size(size_bytes: float) -> str:
     for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
         if size_bytes < 1024.0:
             return f"{size_bytes:.2f} {unit}"
@@ -91,60 +143,47 @@ def list_allowed_directories() -> str:
     return "\n".join(str(d) for d in ALLOWED_DIRS)
 
 @mcp.tool()
-def read_text_file(path: str, head: Optional[int] = None, tail: Optional[int] = None) -> str:
-    """Read text file contents. 
-    **IMPORTANT** supercedes by read_multiple_files, which should be preferred
-    for most cases as it accepts single and multiple element arrays.
-    Only fallback to read_text_file if there is need to read trimmed 
-    filecontent to save context window/ too heavy files.
-    
-    """
-    if head is not None and tail is not None:
-        raise ValueError("Cannot specify both head and tail")
-
-    path_obj = validate_path(path)
-    
-    try:
-        with open(path_obj, 'r', encoding='utf-8') as f:
-            if head is not None:
-                return "".join([next(f) for _ in range(head)])
-            elif tail is not None:
-                return "".join(f.readlines()[-tail:])
-            else:
-                return f.read()
-    except UnicodeDecodeError:
-        return f"Error: File {path} appears to be binary. Use read_media_file instead."
-    except Exception as e:
-        return f"Error reading file: {str(e)}"
-
-@mcp.tool()
-def read_multiple_files(paths: List[str]) -> str:
+def read_files(files: List[FileReadRequest]) -> str:
     """
     Read the contents of multiple files simultaneously.
     Returns path and content separated by dashes.
+    Prefer relative paths.
     """
     results = []
-    for p_str in paths:
+    for file_request_data in files:
+        if isinstance(file_request_data, dict):
+            file_request = FileReadRequest(**file_request_data)
+        else:
+            file_request = file_request_data
+            
         try:
-            path_obj = validate_path(p_str)
-            # Check if it's binary or directory before reading
+            path_obj = validate_path(file_request.path)
+            if file_request.head is not None and file_request.tail is not None:
+                raise ValueError("Cannot specify both head and tail for a single file.")
+            
             if path_obj.is_dir():
                 content = "Error: Is a directory"
             else:
                 try:
-                    content = path_obj.read_text(encoding='utf-8')
+                    with open(path_obj, 'r', encoding='utf-8') as f:
+                        if file_request.head is not None:
+                            content = "".join([next(f) for _ in range(file_request.head)])
+                        elif file_request.tail is not None:
+                            content = "".join(f.readlines()[-file_request.tail:])
+                        else:
+                            content = f.read()
                 except UnicodeDecodeError:
                     content = "Error: Binary file. Use read_media_file."
             
-            results.append(f"File: {p_str}\n{content}")
+            results.append(f"File: {file_request.path}\n{content}")
         except Exception as e:
-            results.append(f"File: {p_str}\nError: {e}")
+            results.append(f"File: {file_request.path}\nError: {e}")
             
     return "\n\n---\n\n".join(results)
 
 @mcp.tool()
 def read_media_file(path: str) -> dict:
-    """Read an image or audio file as base64."""
+    """Read an image or audio file as base64. Prefer relative paths."""
     path_obj = validate_path(path)
     mime_type, _ = mimetypes.guess_type(path_obj)
     if not mime_type: mime_type = "application/octet-stream"
@@ -160,7 +199,7 @@ def read_media_file(path: str) -> dict:
 
 @mcp.tool()
 def write_file(path: str, content: str) -> str:
-    """Create a new file or completely overwrite an existing file."""
+    """Create a new file or completely overwrite an existing file. Prefer relative paths."""
     path_obj = validate_path(path)
     with open(path_obj, 'w', encoding='utf-8') as f:
         f.write(content)
@@ -168,14 +207,14 @@ def write_file(path: str, content: str) -> str:
 
 @mcp.tool()
 def create_directory(path: str) -> str:
-    """Create a new directory or ensure it exists."""
+    """Create a new directory or ensure it exists. Prefer relative paths."""
     path_obj = validate_path(path)
     os.makedirs(path_obj, exist_ok=True)
     return f"Successfully created directory {path}"
 
 @mcp.tool()
 def list_directory(path: str) -> str:
-    """Get a detailed listing of all files and directories."""
+    """Get a detailed listing of all files and directories. Prefer relative paths."""
     path_obj = validate_path(path)
     if not path_obj.is_dir(): return f"Error: {path} is not a directory"
     
@@ -187,7 +226,7 @@ def list_directory(path: str) -> str:
 
 @mcp.tool()
 def list_directory_with_sizes(path: str) -> str:
-    """Get listing with file sizes."""
+    """Get listing with file sizes. Prefer relative paths."""
     path_obj = validate_path(path)
     if not path_obj.is_dir(): return f"Error: Not a directory"
     
@@ -203,7 +242,7 @@ def list_directory_with_sizes(path: str) -> str:
 
 @mcp.tool()
 def move_file(source: str, destination: str) -> str:
-    """Move or rename files."""
+    """Move or rename files. Prefer relative paths."""
     src = validate_path(source)
     dst = validate_path(destination)
     if dst.exists(): raise ValueError(f"Destination {destination} already exists")
@@ -212,7 +251,7 @@ def move_file(source: str, destination: str) -> str:
 
 @mcp.tool()
 def search_files(path: str, pattern: str) -> str:
-    """Recursively search for files matching a glob pattern."""
+    """Recursively search for files matching a glob pattern. Prefer relative paths."""
     root = validate_path(path)
     try:
         results = [str(p.relative_to(root)) for p in root.rglob(pattern) if p.is_file()]
@@ -223,28 +262,29 @@ def search_files(path: str, pattern: str) -> str:
 
 @mcp.tool()
 def get_file_info(path: str) -> str:
-    """Retrieve detailed metadata."""
+    """Retrieve detailed metadata. Prefer relative paths."""
     p = validate_path(path)
     s = p.stat()
     return f"Path: {p}\nType: {'Dir' if p.is_dir() else 'File'}\nSize: {format_size(s.st_size)}\nModified: {datetime.fromtimestamp(s.st_mtime)}"
 
 @mcp.tool()
-def directory_tree(path: str, max_depth: int = 3, exclude_dirs: Optional[List[str]] = None) -> str:
+def directory_tree(path: str, max_depth: int = 4, exclude_dirs: Optional[List[str]] = None) -> str:
     """Get recursive JSON tree with depth limit and default excludes."""
     root = validate_path(path)
     
     # Use provided excludes or our new smart defaults
     default_excludes = ['.git', '.venv', '__pycache__', 'node_modules', '.pytest_cache']
     excluded = exclude_dirs if exclude_dirs is not None else default_excludes
+    max_depth = 3 if isinstance(max_depth,str) else max_depth
 
     def build(current: Path, depth: int) -> Optional[Dict]:
         if depth > max_depth or current.name in excluded:
             return None
         
-        node = {"name": current.name, "type": "directory" if current.is_dir() else "file"}
+        node: Dict[str, object] = {"name": current.name, "type": "directory" if current.is_dir() else "file"}
         
         if current.is_dir():
-            children = []
+            children: List[Dict] = []
             try:
                 for entry in sorted(current.iterdir(), key=lambda x: x.name):
                     child = build(entry, depth + 1)
@@ -294,7 +334,6 @@ APPROVAL_KEYWORD = "##APPROVE##"
 
 
 
-
 @mcp.tool()
 def propose_and_review(path: str, new_string: str, old_string: str = "", expected_replacements: int = 1, session_path: Optional[str] = None) -> str:
     """
@@ -304,8 +343,10 @@ def propose_and_review(path: str, new_string: str, old_string: str = "", expecte
     Intents:
     1.  **Start New Review (Patch):** Provide `path`, `old_string`, `new_string`. Validates the patch against the original file.
     2.  **Start New Review (Full Rewrite):** Provide `path`, `new_string`, and leave `old_string` empty.
-    3.  **Continue Review (Contextual Patch):** Provide `session_path`, `old_string` (as the anchor), and `new_string` (as the replacement). This is the token-efficient mode.
-    4.  **Continue Review (Full Rewrite / Recovery):** Provide `session_path`, `new_string`, and the full content of the file as `old_string` to guarantee a match.
+    3.  **Continue Review (Contextual Patch):** Provide `path`, `session_path`, `old_string`, and `new_string`.
+    4.  **Continue Review (Full Rewrite / Recovery):** Provide `path`, `session_path`, `new_string`, and the full content of the file as `old_string`.
+
+    Note: `path` is always required to identify the file being edited, even when continuing a session.
 
     It blocks and waits for the user to save the file, then returns their action ('APPROVE' or 'REVIEW').
     """
@@ -347,9 +388,11 @@ def propose_and_review(path: str, new_string: str, old_string: str = "", expecte
             if temp_dir.exists(): shutil.rmtree(temp_dir)
             raise ValueError(f"Edit preparation failed: {prep_result.message} (Error type: {prep_result.error_type})")
 
-        current_file_path.write_text(prep_result.original_content, encoding='utf-8')
+        if prep_result.original_content is not None:
+            current_file_path.write_text(prep_result.original_content, encoding='utf-8')
         active_proposal_content = prep_result.new_content
-        future_file_path.write_text(active_proposal_content, encoding='utf-8')
+        if active_proposal_content is not None:
+            future_file_path.write_text(active_proposal_content, encoding='utf-8')
 
     # --- Step 2: Display, Launch, and Wait for Human ---
     vscode_command = f'code --diff "{current_file_path}" "{future_file_path}"'
@@ -386,7 +429,7 @@ def propose_and_review(path: str, new_string: str, old_string: str = "", expecte
     else:
         current_file_path.write_text(user_edited_content, encoding='utf-8')
         user_feedback_diff = "".join(difflib.unified_diff(
-            active_proposal_content.splitlines(keepends=True),
+            active_proposal_content.splitlines(keepends=True) if active_proposal_content is not None else [],
             user_edited_content.splitlines(keepends=True),
             fromfile=f"a/{future_file_path.name} (agent proposal)",
             tofile=f"b/{future_file_path.name} (user feedback)"
@@ -431,6 +474,7 @@ def append_text(path: str, content: str) -> str:
     """
     Append text to the end of a file. 
     Use this as a fallback if edit_file fails to find a match.
+    Prefer relative paths.
     """
     p = validate_path(path)
     if not p.exists():

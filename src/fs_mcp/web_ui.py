@@ -14,6 +14,52 @@ from streamlit_js_eval import streamlit_js_eval
 # --- 1. SETUP & CONFIG ---
 st.set_page_config(page_title="FS-MCP", layout="wide", page_icon="📂")
 
+def get_workspace_description():
+    """
+    Calls list_allowed_directories and list_directory to generate
+    a descriptive text of the workspace.
+    """
+    try:
+        # 1. Get allowed directories
+        list_dirs_fn = tools.get('list_allowed_directories')
+        list_dir_fn = tools.get('list_directory')
+        directory_tree_fn = tools.get('directory_tree')
+
+        if not list_dirs_fn or not list_dir_fn or not directory_tree_fn:
+            return "Error: Core directory tools not found."
+
+        allowed_dirs_str = list_dirs_fn()
+        allowed_dirs = [d.strip() for d in allowed_dirs_str.split('\n') if d.strip()]
+
+        dir_tree_listings = []
+        for d in allowed_dirs:
+            tree = directory_tree_fn(path=d)
+            dir_tree_listings.append(f"Directory: {d}\n---\n{tree}\n")
+        dir_tree_str = "\n".join(dir_tree_listings)
+
+        # 2. Get directory listings for each allowed directory
+        dir_listings = []
+        for d in allowed_dirs:
+            listing = list_dir_fn(path=d)
+            dir_listings.append(f"Directory: {d}\n---\n{listing}\n")
+        
+        # 3. Format the final output
+        full_listing_str = "\n".join(dir_listings)
+        output = (
+            "This is the initial result for MCP calls :\n\n"
+            "== list_allowed_directories ==\n"
+            f"{allowed_dirs_str}\n\n"
+            "== list_directory ==\n"
+            f"{full_listing_str}\n\n"
+            "== directory_tree ==\n"
+            f"{dir_tree_str}"
+        )
+        return output
+
+    except Exception as e:
+        return f"Error generating room description: {e}"
+
+
 # [NEW] Import Google GenAI transformers for schema standardization
 try:
     from google.genai import _transformers
@@ -45,6 +91,7 @@ if not server.ALLOWED_DIRS:
 
 st.sidebar.header("Active Configuration")
 st.sidebar.code("\n".join(str(d) for d in server.ALLOWED_DIRS))
+
 
 # --- 3. TOOL DISCOVERY & SCHEMA EXPORT ---
 tools = {}
@@ -124,8 +171,16 @@ except Exception as e:
     st.exception(e) 
     st.stop()
 
+# --- 3.5. ROOM DESCRIPTION ---
+if 'workspace_description' not in st.session_state:
+    st.session_state.workspace_description = get_workspace_description()
+
+with st.sidebar.expander("📝 Workspace Description", expanded=False):
+    st.caption("Copy this to quickly onboard the agent")
+    st.code(st.session_state.workspace_description, language="md")
+
 # --- SIDEBAR: EXPORT SECTION ---
-with st.sidebar.expander("🔌 Gemini API Schemas", expanded=True):
+with st.sidebar.expander("🔌 Gemini API Schemas", expanded=False):
     st.caption("Copy this JSON for Gemini Function Declarations:")
     st.code(json.dumps(gemini_schemas, indent=2), language="json")
 

@@ -39,10 +39,10 @@ def initialize(directories: List[str]):
     ALLOWED_DIRS.clear()
     
     IS_VSCODE_CLI_AVAILABLE = shutil.which('code') is not None
-    if IS_VSCODE_CLI_AVAILABLE:
-        print("✅ VS Code CLI detected. Diff windows will open automatically.")
-    else:
-        print("ℹ️ VS Code CLI ('code') not found in PATH. Please open diff views manually.")
+    # if IS_VSCODE_CLI_AVAILABLE:
+    #     print("✅ VS Code CLI detected. Diff windows will open automatically.")
+    # else:
+    #     print("ℹ️ VS Code CLI ('code') not found in PATH. Please open diff views manually.")
 
     raw_dirs = directories or [str(Path.cwd())]
     for d in raw_dirs:
@@ -236,6 +236,7 @@ def directory_tree(path: str, max_depth: int = 3, exclude_dirs: Optional[List[st
     # Use provided excludes or our new smart defaults
     default_excludes = ['.git', '.venv', '__pycache__', 'node_modules', '.pytest_cache']
     excluded = exclude_dirs if exclude_dirs is not None else default_excludes
+    max_depth = 3 if isinstance(max_depth,str) else max_depth
 
     def build(current: Path, depth: int) -> Optional[Dict]:
         if depth > max_depth or current.name in excluded:

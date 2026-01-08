@@ -125,7 +125,7 @@ except Exception as e:
     st.stop()
 
 # --- SIDEBAR: EXPORT SECTION ---
-with st.sidebar.expander("🔌 Gemini API Schemas", expanded=True):
+with st.sidebar.expander("🔌 Gemini API Schemas", expanded=False):
     st.caption("Copy this JSON for Gemini Function Declarations:")
     st.code(json.dumps(gemini_schemas, indent=2), language="json")
 

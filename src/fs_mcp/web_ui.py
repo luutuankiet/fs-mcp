@@ -261,7 +261,8 @@ sig = inspect.signature(fn)
 
 st.header(f"🔧 {selected}")
 if inspect.getdoc(fn):
-    st.info(inspect.getdoc(fn))
+    with st.expander("Tool Description", expanded=False):
+        st.info(inspect.getdoc(fn))
 
 # INPUT TABS
 tab_raw, tab_compact, tab_form = st.tabs(["📄 Raw JSON", "⚡ Compact JSON", "📝 Interactive Form"])

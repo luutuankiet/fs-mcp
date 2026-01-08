@@ -347,7 +347,11 @@ def propose_and_review(path: str, new_string: str, old_string: str = "", expecte
     1.  **Start New Review (Patch):** Provide `path`, `old_string`, `new_string`. Validates the patch against the original file.
     2.  **Start New Review (Full Rewrite):** Provide `path`, `new_string`, and leave `old_string` empty.
     3.  **Continue Review (Contextual Patch):** Provide `path`, `session_path`, `old_string`, and `new_string`.
-        *   **CRITICAL:** If the user modified the file in the previous turn (indicated by `user_feedback_diff`), `old_string` MUST match the text **as modified by the user**, not your previous `new_string`. You must apply the user's diff to your previous output to determine the correct `old_string` for this step.
+        *   **CRITICAL: STATE RECONSTRUCTION PROTOCOL**
+            1.  **Analyze the Diff:** If `user_action` was 'REVIEW', the user has manually edited the file. The `user_feedback_diff` is the ABSOLUTE TRUTH.
+            2.  **Reconstruct Current State:** You must mentally apply the `user_feedback_diff` to your previous `new_string` to calculate the current file content.
+            3.  **Match Exactly:** Your `old_string` MUST match this reconstructed content character-for-character, *including* any comments or temporary notes the user typed (e.g., `# hey remove this`).
+            4.  **Execute Instructions:** If the user wrote instructions in the code, your `new_string` must perform those edits (e.g., removing the comment, fixing the line). Do not ignore them to add new features. **always remove the identified user review comment from the new_string.**
     4.  **Continue Review (Full Rewrite / Recovery):** Provide `path`, `session_path`, `new_string`, and the full content of the file as `old_string`.
 
     Note: `path` is always required to identify the file being edited, even when continuing a session.

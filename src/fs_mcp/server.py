@@ -36,6 +36,7 @@ class EditResult:
 
 
 # --- Global Configuration ---
+USER_ACCESSIBLE_DIRS: List[Path] = []
 ALLOWED_DIRS: List[Path] = []
 mcp = FastMCP("filesystem")
 IS_VSCODE_CLI_AVAILABLE = False
@@ -43,37 +44,38 @@ IS_VSCODE_CLI_AVAILABLE = False
 
 def initialize(directories: List[str]):
     """Initialize the allowed directories and check for VS Code CLI."""
-    global ALLOWED_DIRS, IS_VSCODE_CLI_AVAILABLE
+    global ALLOWED_DIRS, USER_ACCESSIBLE_DIRS, IS_VSCODE_CLI_AVAILABLE
     ALLOWED_DIRS.clear()
+    USER_ACCESSIBLE_DIRS.clear()
     
     IS_VSCODE_CLI_AVAILABLE = shutil.which('code') is not None
-    # if IS_VSCODE_CLI_AVAILABLE:
-    #     print("✅ VS Code CLI detected. Diff windows will open automatically.")
-    # else:
-    #     print("ℹ️ VS Code CLI ('code') not found in PATH. Please open diff views manually.")
 
-    # a CWD, and the system's temporary directory for review sessions.
     raw_dirs = directories or [str(Path.cwd())]
     
-    # Add the system's temp directory to the list of raw directories
-    # to allow access to review session files.
-    raw_dirs.append(tempfile.gettempdir())
-    
+    # Process user-specified directories
     for d in raw_dirs:
         try:
             p = Path(d).expanduser().resolve()
             if not p.exists() or not p.is_dir():
                 print(f"Warning: Skipping invalid directory: {p}")
                 continue
-            ALLOWED_DIRS.append(p)
+            USER_ACCESSIBLE_DIRS.append(p)
         except Exception as e:
             print(f"Warning: Could not resolve {d}: {e}")
 
-    if not ALLOWED_DIRS:
-        print("Warning: No valid directories allowed. Defaulting to CWD.")
-        ALLOWED_DIRS.append(Path.cwd())
+    # The full list of allowed directories includes the user-accessible ones
+    # and the system's temporary directory for internal review sessions.
+    ALLOWED_DIRS.extend(USER_ACCESSIBLE_DIRS)
+    ALLOWED_DIRS.append(Path(tempfile.gettempdir()).resolve())
+
+    if not USER_ACCESSIBLE_DIRS:
+        print("Warning: No valid user directories. Defaulting to CWD.")
+        cwd = Path.cwd()
+        USER_ACCESSIBLE_DIRS.append(cwd)
+        if cwd not in ALLOWED_DIRS:
+            ALLOWED_DIRS.append(cwd)
             
-    return ALLOWED_DIRS
+    return USER_ACCESSIBLE_DIRS
 
 def validate_path(requested_path: str) -> Path:
     """
@@ -112,16 +114,17 @@ def validate_path(requested_path: str) -> Path:
     # If the path is in the temp directory, apply extra security checks.
     temp_dir = Path(tempfile.gettempdir()).resolve()
     if is_allowed and str(path_obj).startswith(str(temp_dir)):
-        # It must be inside a directory created by our review tool or by pytest.
-        path_str = str(path_obj)
-        is_review_dir = "mcp_review_" in path_str
-        is_pytest_dir = "pytest-" in path_str
+        # Allow access to the temp directory itself, but apply stricter checks for its contents.
+        if path_obj != temp_dir:
+            path_str = str(path_obj)
+            is_review_dir = "mcp_review_" in path_str
+            is_pytest_dir = "pytest-" in path_str
 
-        if not (is_review_dir or is_pytest_dir):
-            is_allowed = False
-        # For review directories, apply stricter checks.
-        elif is_review_dir and not (path_obj.name.startswith("current_") or path_obj.name.startswith("future_")):
-            is_allowed = False
+            if not (is_review_dir or is_pytest_dir):
+                is_allowed = False
+            # For review directories, apply stricter checks.
+            elif is_review_dir and not (path_obj.name.startswith("current_") or path_obj.name.startswith("future_")):
+                is_allowed = False
             
     if not is_allowed:
         raise ValueError(f"Access denied: {requested_path} is outside allowed directories: {ALLOWED_DIRS}")
@@ -140,7 +143,7 @@ def format_size(size_bytes: float) -> str:
 @mcp.tool()
 def list_allowed_directories() -> str:
     """List the directories this server is allowed to access."""
-    return "\n".join(str(d) for d in ALLOWED_DIRS)
+    return "\n".join(str(d) for d in USER_ACCESSIBLE_DIRS)
 
 @mcp.tool()
 def read_files(files: List[FileReadRequest]) -> str:

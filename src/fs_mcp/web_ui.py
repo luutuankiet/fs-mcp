@@ -14,10 +14,12 @@ from streamlit_js_eval import streamlit_js_eval
 # --- 1. SETUP & CONFIG ---
 st.set_page_config(page_title="FS-MCP", layout="wide", page_icon="📂")
 
+import tempfile
+
 def get_workspace_description():
     """
     Calls list_allowed_directories and list_directory to generate
-    a descriptive text of the workspace.
+    a descriptive text of the workspace, excluding temporary directories.
     """
     try:
         # 1. Get allowed directories
@@ -29,7 +31,16 @@ def get_workspace_description():
             return "Error: Core directory tools not found."
 
         allowed_dirs_str = list_dirs_fn()
-        allowed_dirs = [d.strip() for d in allowed_dirs_str.split('\n') if d.strip()]
+        
+        # Filter out the temporary directory
+        temp_dir = tempfile.gettempdir()
+        allowed_dirs = [
+            d.strip() for d in allowed_dirs_str.split('\n') 
+            if d.strip() and not d.strip().startswith(temp_dir)
+        ]
+        
+        # Reconstruct the string for display, excluding the temp dir
+        filtered_dirs_str = "\n".join(allowed_dirs)
 
         dir_tree_listings = []
         for d in allowed_dirs:
@@ -46,13 +57,15 @@ def get_workspace_description():
         # 3. Format the final output
         full_listing_str = "\n".join(dir_listings)
         output = (
+            "\n```\n"
             "This is the initial result for MCP calls :\n\n"
             "== list_allowed_directories ==\n"
-            f"{allowed_dirs_str}\n\n"
+            f"{filtered_dirs_str}\n\n"
             "== list_directory ==\n"
             f"{full_listing_str}\n\n"
             "== directory_tree ==\n"
             f"{dir_tree_str}"
+            "\n```\n"
         )
         return output
 

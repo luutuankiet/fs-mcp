@@ -1,5 +1,13 @@
 import json
 from pydantic import BaseModel
+from typing import Optional
+
+class FileReadRequest(BaseModel):
+    path: str
+    head: Optional[int] = None
+    tail: Optional[int] = None
+
+
 import os
 import base64
 import mimetypes
@@ -91,54 +99,40 @@ def list_allowed_directories() -> str:
     return "\n".join(str(d) for d in ALLOWED_DIRS)
 
 @mcp.tool()
-def read_text_file(path: str, head: Optional[int] = None, tail: Optional[int] = None) -> str:
-    """Read text file contents. 
-    **IMPORTANT** supercedes by read_multiple_files, which should be preferred
-    for most cases as it accepts single and multiple element arrays.
-    Only fallback to read_text_file if there is need to read trimmed 
-    filecontent to save context window/ too heavy files.
-    
-    """
-    if head is not None and tail is not None:
-        raise ValueError("Cannot specify both head and tail")
-
-    path_obj = validate_path(path)
-    
-    try:
-        with open(path_obj, 'r', encoding='utf-8') as f:
-            if head is not None:
-                return "".join([next(f) for _ in range(head)])
-            elif tail is not None:
-                return "".join(f.readlines()[-tail:])
-            else:
-                return f.read()
-    except UnicodeDecodeError:
-        return f"Error: File {path} appears to be binary. Use read_media_file instead."
-    except Exception as e:
-        return f"Error reading file: {str(e)}"
-
-@mcp.tool()
-def read_multiple_files(paths: List[str]) -> str:
+def read_files(files: List[FileReadRequest]) -> str:
     """
     Read the contents of multiple files simultaneously.
     Returns path and content separated by dashes.
     """
     results = []
-    for p_str in paths:
+    for file_request_data in files:
+        if isinstance(file_request_data, dict):
+            file_request = FileReadRequest(**file_request_data)
+        else:
+            file_request = file_request_data
+            
         try:
-            path_obj = validate_path(p_str)
-            # Check if it's binary or directory before reading
+            path_obj = validate_path(file_request.path)
+            if file_request.head is not None and file_request.tail is not None:
+                raise ValueError("Cannot specify both head and tail for a single file.")
+            
             if path_obj.is_dir():
                 content = "Error: Is a directory"
             else:
                 try:
-                    content = path_obj.read_text(encoding='utf-8')
+                    with open(path_obj, 'r', encoding='utf-8') as f:
+                        if file_request.head is not None:
+                            content = "".join([next(f) for _ in range(file_request.head)])
+                        elif file_request.tail is not None:
+                            content = "".join(f.readlines()[-file_request.tail:])
+                        else:
+                            content = f.read()
                 except UnicodeDecodeError:
                     content = "Error: Binary file. Use read_media_file."
             
-            results.append(f"File: {p_str}\n{content}")
+            results.append(f"File: {file_request.path}\n{content}")
         except Exception as e:
-            results.append(f"File: {p_str}\nError: {e}")
+            results.append(f"File: {file_request.path}\nError: {e}")
             
     return "\n\n---\n\n".join(results)
 
@@ -229,7 +223,7 @@ def get_file_info(path: str) -> str:
     return f"Path: {p}\nType: {'Dir' if p.is_dir() else 'File'}\nSize: {format_size(s.st_size)}\nModified: {datetime.fromtimestamp(s.st_mtime)}"
 
 @mcp.tool()
-def directory_tree(path: str, max_depth: int = 3, exclude_dirs: Optional[List[str]] = None) -> str:
+def directory_tree(path: str, max_depth: int = 4, exclude_dirs: Optional[List[str]] = None) -> str:
     """Get recursive JSON tree with depth limit and default excludes."""
     root = validate_path(path)
     
@@ -291,7 +285,6 @@ class RooStyleEditTool:
 
 # --- Interactive Human-in-the-Loop Tools ---
 APPROVAL_KEYWORD = "##APPROVE##"
-
 
 
 

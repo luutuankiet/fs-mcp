@@ -1,6 +1,6 @@
 [project]
 name = "fs-mcp"
-version = "1.4.0"
+version = "1.4.1"
 description = "A secure MCP filesystem server with Stdio and Web UI modes."
 authors = [{name = "luutuankiet", email = "luutuankiet.ftu2@gmail.com"}]
 requires-python = ">=3.10"

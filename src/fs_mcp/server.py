@@ -151,8 +151,28 @@ def read_files(files: List[FileReadRequest]) -> str:
     Read the contents of multiple files simultaneously.
     Returns path and content separated by dashes.
     Prefer relative paths.
+
+    **LITERAL NEWLINE PROTOCOL:** This tool sanitizes file content to prevent ambiguity
+    between actual newlines and literal `\n` characters. Any literal newline characters (represented
+    as `\\n` in Python strings) found in a file are replaced with the placeholder
+    `__SANITIZED_NEWLINE__`. When proposing edits (e.g., with `propose_and_review`),
+    you MUST use this placeholder to represent literal `\n` characters in your `old_string` and
+    `new_string` arguments. The system will automatically convert the placeholder back to `\\n`
+    before writing the final content to disk.
+
+    **Example 1: A simple string**
+    - If a file contains the raw text `print("Hello\nWorld")`, this tool will return the string
+      `print("Hello__SANITIZED_NEWLINE__World")`.
+    - To change this line, your `old_string` must be
+      `print("Hello__SANITIZED_NEWLINE__World")`.
+
+    **Example 2: An f-string**
+    - If a file contains `print(f"Debug: \n{json.dumps(request_json)}")`, this tool will return
+      `print(f"Debug: __SANITIZED_NEWLINE__{json.dumps(request_json)}")`.
+    - To modify it, your `old_string` must use the placeholder.
     """
     results = []
+    tool = RooStyleEditTool()
     for file_request_data in files:
         if isinstance(file_request_data, dict):
             file_request = FileReadRequest(**file_request_data)
@@ -178,7 +198,7 @@ def read_files(files: List[FileReadRequest]) -> str:
                 except UnicodeDecodeError:
                     content = "Error: Binary file. Use read_media_file."
             
-            results.append(f"File: {file_request.path}\n{content}")
+            results.append(f"File: {file_request.path}\n{tool.escape_placeholders(content)}")
         except Exception as e:
             results.append(f"File: {file_request.path}\nError: {e}")
             
@@ -308,6 +328,12 @@ class RooStyleEditTool:
         return content.count(substr) if substr else 0
     def normalize_line_endings(self, content: str) -> str:
         return content.replace('\r\n', '\n').replace('\r', '\n')
+
+    def escape_placeholders(self, content: str) -> str:
+        return content.replace('\\n', '__SANITIZED_NEWLINE__')
+
+    def unescape_placeholders(self, content: str) -> str:
+        return content.replace('__SANITIZED_NEWLINE__', '\\n')
     
     def _prepare_edit(self, file_path: str, old_string: str, new_string: str, expected_replacements: int) -> EditResult:
         p = validate_path(file_path)
@@ -318,8 +344,15 @@ class RooStyleEditTool:
         if file_exists and is_new_file:
             return EditResult(success=False, message=f"File '{file_path}' already exists.", error_type="file_exists")
         original_content = p.read_text(encoding='utf-8') if file_exists else ""
-        normalized_content = self.normalize_line_endings(original_content)
-        normalized_old = self.normalize_line_endings(old_string)
+        
+        # Escape literal `\n` before processing
+        escaped_original_content = self.escape_placeholders(original_content)
+        escaped_old_string = self.escape_placeholders(old_string)
+        escaped_new_string = self.escape_placeholders(new_string)
+
+        normalized_content = self.normalize_line_endings(escaped_original_content)
+        normalized_old = self.normalize_line_endings(escaped_old_string)
+        
         if not is_new_file:
             if old_string == new_string:
                 return EditResult(success=False, message="No changes to apply.", error_type="validation_error")
@@ -328,7 +361,13 @@ class RooStyleEditTool:
                 return EditResult(success=False, message="No match found for 'old_string'.", error_type="validation_error")
             if occurrences != expected_replacements:
                 return EditResult(success=False, message=f"Expected {expected_replacements} occurrences but found {occurrences}.", error_type="validation_error")
-        new_content = new_string if is_new_file else normalized_content.replace(normalized_old, new_string)
+        
+        # Perform the replacement on the escaped content
+        replaced_content = escaped_new_string if is_new_file else normalized_content.replace(normalized_old, self.escape_placeholders(new_string))
+        
+        # Unescape before returning the final content
+        new_content = self.unescape_placeholders(replaced_content)
+        
         return EditResult(success=True, message="Edit prepared.", original_content=original_content, new_content=new_content)
 
 # --- Interactive Human-in-the-Loop Tools ---
@@ -341,6 +380,28 @@ APPROVAL_KEYWORD = "##APPROVE##"
 def propose_and_review(path: str, new_string: str, old_string: str = "", expected_replacements: int = 1, session_path: Optional[str] = None) -> str:
     """
     Starts or continues an interactive review session using a VS Code diff view. This smart tool adapts its behavior based on the arguments provided.
+
+    **LITERAL NEWLINE PROTOCOL:** This tool operates on sanitized content.
+    The `read_files` tool replaces any literal `\n` characters (represented as `\\n`
+    in Python strings) with `__SANITIZED_NEWLINE__`.
+    You MUST use this placeholder in your `old_string` and `new_string` arguments
+    when you intend to match or write a literal `\n`. The system handles the
+    conversion to and from the placeholder automatically.
+
+    **Example:**
+    - To change the file content from `print("Hello\nWorld")` to `print("Hi\nUniverse")`,
+      you would first receive the sanitized content from `read_files` as
+      `print("Hello__SANITIZED_NEWLINE__World")`.
+    - Your call to this tool must then be:
+      - `old_string`: `"print("Hello__SANITIZED_NEWLINE__World")"`
+      - `new_string`: `"print("Hi__SANITIZED_NEWLINE__Universe")"`
+
+    **Scenario: Using User-Provided Content**
+    If you receive content directly from a user prompt that contains a literal `\n`,
+    you MUST manually replace it with the placeholder before calling this tool.
+
+    - **User prompt might contain:** `print(f"Debug: \n{json.dumps(request_json)}")`
+    - **Your `new_string` MUST be:** `print(f"Debug: __SANITIZED_NEWLINE__{json.dumps(request_json)}")`
 
     Intents:
 
@@ -372,18 +433,19 @@ def propose_and_review(path: str, new_string: str, old_string: str = "", expecte
         current_file_path = temp_dir / f"current_{original_path_obj.name}"
         future_file_path = temp_dir / f"future_{original_path_obj.name}"
         
-        staged_content = current_file_path.read_text(encoding='utf-8')
+        staged_content = tool.escape_placeholders(current_file_path.read_text(encoding='utf-8'))
         
         # The `old_string` is the "contextual anchor". We try to apply it as a patch.
-        occurrences = tool.count_occurrences(staged_content, old_string)
+        occurrences = tool.count_occurrences(staged_content, tool.escape_placeholders(old_string))
         
         if occurrences != 1:
             # SAFETY VALVE: The patch is ambiguous or invalid. Fail gracefully.
             raise ValueError(f"Contextual patch failed. The provided 'old_string' anchor was found {occurrences} times in the user's last version, but expected exactly 1. Please provide the full file content as 'old_string' to recover.")
             
         # Patch successfully applied.
-        active_proposal_content = staged_content.replace(old_string, new_string, 1)
-        future_file_path.write_text(active_proposal_content, encoding='utf-8')
+        active_proposal_content = staged_content.replace(tool.escape_placeholders(old_string), tool.escape_placeholders(new_string), 1)
+        future_file_path.write_text(tool.unescape_placeholders(active_proposal_content), encoding='utf-8')
+        
 
     else:
         # --- INTENT: STARTING A NEW SESSION ---
@@ -426,7 +488,7 @@ def propose_and_review(path: str, new_string: str, old_string: str = "", expecte
     if user_edited_content.endswith("\n\n"):
         # Remove trailing newlines
         clean_content = user_edited_content.rstrip('\n')
-        # hey roo confirm if this triggers ONLY IF the user manually appends 2 newline in their review. otherwise we'll have false positive. 
+        
         try:
             future_file_path.write_text(clean_content, encoding='utf-8')
             print("✅ Approval detected. You can safely close the diff view.")
@@ -436,15 +498,20 @@ def propose_and_review(path: str, new_string: str, old_string: str = "", expecte
         response["message"] = "User has approved the changes. Call 'commit_review' to finalize."
     else:
         current_file_path.write_text(user_edited_content, encoding='utf-8')
+        
+        # Escape content before diffing
+        escaped_proposal = tool.escape_placeholders(active_proposal_content) if active_proposal_content is not None else ""
+        escaped_user_content = tool.escape_placeholders(user_edited_content)
+
         user_feedback_diff = "".join(difflib.unified_diff(
-            active_proposal_content.splitlines(keepends=True) if active_proposal_content is not None else [],
-            user_edited_content.splitlines(keepends=True),
+            escaped_proposal.splitlines(keepends=True),
+            escaped_user_content.splitlines(keepends=True),
             fromfile=f"a/{future_file_path.name} (agent proposal)",
             tofile=f"b/{future_file_path.name} (user feedback)"
         ))
         response["user_action"] = "REVIEW"
         response["message"] = "User provided feedback. A diff is included. Propose a new edit against the updated content."
-        response["user_feedback_diff"] = user_feedback_diff
+        response["user_feedback_diff"] = tool.unescape_placeholders(user_feedback_diff)
         
     return json.dumps(response, indent=2)
 

@@ -114,6 +114,42 @@ def test_temp_file_access_security(temp_env):
     with pytest.raises(ValueError, match="Access denied"):
         server.validate_path(str(rogue_file))
         
-    # Cleanup
-    shutil.rmtree(review_dir)
-    shutil.rmtree(non_review_dir)
+def test_literal_newline_sanitization_protocol(temp_env):
+    """Test the literal newline sanitization protocol."""
+    target = temp_env / "test_newline.txt"
+    
+    # --- Step 1: Create a file with a literal \n ---
+    raw_content = 'print("Hello\\nWorld")'
+    server.write_file.fn(str(target), raw_content)
+    
+    # --- Step 2: Test `read_files` sanitization ---
+    read_result = server.read_files.fn([{"path": str(target)}])
+    sanitized_content = 'print("Hello__SANITIZED_NEWLINE__World")'
+    assert sanitized_content in read_result
+    
+    # --- Step 3: Test `propose_and_review` with sanitized content ---
+    new_sanitized_content = 'print("Hi__SANITIZED_NEWLINE__Universe")'
+    
+    # We can't fully test the interactive part, so we'll check the preparation
+    tool = server.RooStyleEditTool()
+    prep_result = tool._prepare_edit(
+        file_path=str(target),
+        old_string=sanitized_content,
+        new_string=new_sanitized_content,
+        expected_replacements=1
+    )
+    
+    assert prep_result.success
+    
+    # The new_content should have the placeholder unescaped back to the literal \n
+    expected_new_content = 'print("Hi\\nUniverse")'
+    assert prep_result.new_content == expected_new_content
+    
+    # --- Step 4: Simulate a simplified end-to-end workflow ---
+    # In a real scenario, the agent would use the sanitized strings.
+    # Here, we'll manually apply the change to confirm the logic.
+    server.write_file.fn(str(target), prep_result.new_content)
+    final_content = target.read_text()
+    
+    assert final_content == expected_new_content
+

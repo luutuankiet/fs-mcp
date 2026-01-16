@@ -22,17 +22,7 @@ import shutil
 import subprocess
 
 from dataclasses import dataclass
-import difflib
-
-# The new structure for returning detailed results from the edit tool.
-@dataclass
-class EditResult:
-    success: bool
-    message: str
-    diff: Optional[str] = None
-    error_type: Optional[str] = None
-    original_content: Optional[str] = None
-    new_content: Optional[str] = None
+from .edit_tool import EditResult, RooStyleEditTool, propose_and_review_logic
 
 
 # --- Global Configuration ---
@@ -152,6 +142,26 @@ def read_files(files: List[FileReadRequest]) -> str:
     Returns path and content separated by dashes.
     Prefer relative paths.
 
+    **LARGE FILE HANDLING:**
+    If you encounter errors like "response too large", "token limit exceeded", or "context overflow":
+    1. FIRST: Call `get_file_info(path)` to understand file dimensions (line count, token estimate, structure)
+    2. THEN: Use the `head` or `tail` parameters to read in manageable chunks
+    3. STRATEGY: Start with a small sample (e.g., head=50), then read iteratively based on the 
+       recommended chunk size from `get_file_info`
+    
+    **Example - Reading a large JSON file:**
+    ```
+    # Step 1: Get file info
+    get_file_info("manifest_slim.json")
+    # Returns: "... Total Lines: 15000, Estimated Tokens: 300000, Recommended chunk: 500 lines ..."
+    
+    # Step 2: Read first chunk
+    read_files([{"path": "manifest_slim.json", "head": 500}])
+    
+    # Step 3: Continue reading in chunks (lines 500-1000, 1000-1500, etc.)
+    # Note: To skip to a specific section, calculate offset based on line numbers
+    ```
+
     **LITERAL NEWLINE PROTOCOL:** This tool sanitizes file content to prevent ambiguity
     between actual newlines and literal `\n` characters. Any literal newline characters (represented
     as `\\n` in Python strings) found in a file are replaced with the placeholder
@@ -172,7 +182,7 @@ def read_files(files: List[FileReadRequest]) -> str:
     - To modify it, your `old_string` must use the placeholder.
     """
     results = []
-    tool = RooStyleEditTool()
+    tool = RooStyleEditTool(validate_path)
     for file_request_data in files:
         if isinstance(file_request_data, dict):
             file_request = FileReadRequest(**file_request_data)
@@ -285,10 +295,198 @@ def search_files(path: str, pattern: str) -> str:
 
 @mcp.tool()
 def get_file_info(path: str) -> str:
-    """Retrieve detailed metadata. Prefer relative paths."""
+    """
+    Retrieve detailed metadata about a file, including size, structure analysis, and 
+    recommended chunking strategy for large files. This tool is CRITICAL before reading 
+    large files to avoid context overflow errors.
+    
+    Returns:
+    - Basic metadata (path, type, size, modified time)
+    - Line count (for text files)
+    - Estimated token count
+    - File type-specific analysis (JSON structure, CSV columns, etc.)
+    - Recommended chunk size for iterative reading with read_files
+    
+    Prefer relative paths.
+    """
     p = validate_path(path)
+    
+    if not p.exists():
+        return f"Error: File not found at {path}"
+    
     s = p.stat()
-    return f"Path: {p}\nType: {'Dir' if p.is_dir() else 'File'}\nSize: {format_size(s.st_size)}\nModified: {datetime.fromtimestamp(s.st_mtime)}"
+    is_dir = p.is_dir()
+    
+    # Basic info
+    info_lines = [
+        f"Path: {p}",
+        f"Type: {'Directory' if is_dir else 'File'}",
+        f"Size: {format_size(s.st_size)} ({s.st_size:,} bytes)",
+        f"Modified: {datetime.fromtimestamp(s.st_mtime)}"
+    ]
+    
+    if is_dir:
+        return "\n".join(info_lines)
+    
+    # For files, add detailed analysis
+    try:
+        # Detect file type
+        suffix = p.suffix.lower()
+        mime_type, _ = mimetypes.guess_type(p)
+        
+        # Try to read as text
+        try:
+            content = p.read_text(encoding='utf-8')
+            char_count = len(content)
+            line_count = content.count('\n') + 1
+            estimated_tokens = char_count // 4  # Rough approximation
+            
+            info_lines.append(f"\n--- Text File Analysis ---")
+            info_lines.append(f"Total Lines: {line_count:,}")
+            info_lines.append(f"Total Characters: {char_count:,}")
+            info_lines.append(f"Estimated Tokens: {estimated_tokens:,} (rough estimate: chars ÷ 4)")
+            
+            # Adaptive chunk size recommendation
+            chunk_recommendation = _calculate_adaptive_chunk_size(estimated_tokens, line_count, p)
+            info_lines.append(f"\n--- Chunking Strategy ---")
+            info_lines.append(chunk_recommendation)
+            
+            # File type-specific analysis
+            if suffix == '.json' and char_count < 10_000_000:  # Don't parse huge files
+                type_specific = _analyze_json_structure(content)
+                if type_specific:
+                    info_lines.append(f"\n--- JSON Structure Preview ---")
+                    info_lines.append(type_specific)
+            
+            elif suffix == '.csv' and line_count > 1:
+                type_specific = _analyze_csv_structure(content)
+                if type_specific:
+                    info_lines.append(f"\n--- CSV Structure ---")
+                    info_lines.append(type_specific)
+            
+            elif suffix in ['.txt', '.md', '.log']:
+                lines = content.split('\n')
+                preview_lines = []
+                if len(lines) > 0:
+                    preview_lines.append(f"First line: {lines[0][:100]}")
+                if len(lines) > 1:
+                    preview_lines.append(f"Last line: {lines[-1][:100]}")
+                if preview_lines:
+                    info_lines.append(f"\n--- Content Preview ---")
+                    info_lines.extend(preview_lines)
+                    
+        except UnicodeDecodeError:
+            info_lines.append(f"\n--- Binary File ---")
+            info_lines.append(f"MIME Type: {mime_type or 'application/octet-stream'}")
+            info_lines.append(f"Note: Use read_media_file() for binary content")
+    
+    except Exception as e:
+        info_lines.append(f"\nWarning: Could not analyze file content: {e}")
+    
+    return "\n".join(info_lines)
+
+
+def _calculate_adaptive_chunk_size(estimated_tokens: int, line_count: int, p: Path) -> str:
+    """
+    Calculate recommended chunk size based on file size and token limits.
+    Strategy: Start small for sampling, then scale up adaptively.
+    """
+    # Target: Keep each chunk under 30k tokens to leave room for context
+    TARGET_TOKENS_PER_CHUNK = 30_000
+    SAFE_FIRST_SAMPLE = 50  # lines
+    
+    if estimated_tokens <= TARGET_TOKENS_PER_CHUNK:
+        return "✅ File is small enough to read in one call (no chunking needed)"
+    
+    # Calculate tokens per line average
+    tokens_per_line = estimated_tokens / line_count if line_count > 0 else 1
+    
+    # Calculate safe chunk size in lines
+    recommended_lines = int(TARGET_TOKENS_PER_CHUNK / tokens_per_line) if tokens_per_line > 0 else 1000
+    
+    # Ensure minimum chunk size
+    recommended_lines = max(100, recommended_lines)
+    
+    num_chunks = (line_count + recommended_lines - 1) // recommended_lines  # Ceiling division
+    
+    strategy = [
+        f"⚠️  LARGE FILE WARNING: This file requires chunked reading",
+        f"",
+        f"Recommended Strategy:",
+        f"  1. First sample: read_files([{{'path': '{p.name}', 'head': {SAFE_FIRST_SAMPLE}}}])",
+        f"     (Start with {SAFE_FIRST_SAMPLE} lines to understand structure)",
+        f"",
+        f"  2. Then read in chunks of ~{recommended_lines:,} lines",
+        f"     (Estimated {num_chunks} chunks total)",
+        f"",
+        f"  3. Example progression:",
+        f"     - Chunk 1: head={recommended_lines}",
+        f"     - Chunk 2: Use line numbers {recommended_lines}-{recommended_lines*2}",
+        f"       (Note: read_files doesn't support offset+limit yet, so you may need",
+        f"        to read overlapping chunks or work with the maintainer to add this)",
+        f"",
+        f"Estimated tokens per chunk: ~{int(recommended_lines * tokens_per_line):,}"
+    ]
+    
+    return "\n".join(strategy)
+
+
+def _analyze_json_structure(content: str) -> Optional[str]:
+    """Analyze JSON structure and return a preview of keys and array lengths."""
+    try:
+        data = json.loads(content)
+        lines = []
+        
+        if isinstance(data, dict):
+            lines.append(f"Type: JSON Object")
+            lines.append(f"Top-level keys ({len(data)}): {', '.join(list(data.keys())[:10])}")
+            
+            # Show array lengths for top-level arrays
+            for key, value in list(data.items())[:5]:
+                if isinstance(value, list):
+                    lines.append(f"  - '{key}': Array with {len(value)} items")
+                elif isinstance(value, dict):
+                    lines.append(f"  - '{key}': Object with {len(value)} keys")
+                else:
+                    lines.append(f"  - '{key}': {type(value).__name__}")
+        
+        elif isinstance(data, list):
+            lines.append(f"Type: JSON Array")
+            lines.append(f"Total items: {len(data)}")
+            if len(data) > 0:
+                first_item = data[0]
+                if isinstance(first_item, dict):
+                    lines.append(f"First item keys: {', '.join(list(first_item.keys())[:10])}")
+        
+        return "\n".join(lines)
+    except json.JSONDecodeError:
+        return "⚠️  Invalid JSON (parse error)"
+    except Exception as e:
+        return f"⚠️  Could not analyze JSON: {e}"
+
+
+def _analyze_csv_structure(content: str) -> Optional[str]:
+    """Analyze CSV structure and return column information."""
+    try:
+        lines = content.split('\n')
+        if len(lines) < 1:
+            return None
+        
+        # Assume first line is header
+        header = lines[0]
+        columns = header.split(',')
+        
+        result_lines = [
+            f"Detected columns ({len(columns)}): {', '.join(col.strip() for col in columns[:10])}",
+            f"Estimated rows: {len(lines) - 1:,}"
+        ]
+        
+        if len(columns) > 10:
+            result_lines.append(f"  ... and {len(columns) - 10} more columns")
+        
+        return "\n".join(result_lines)
+    except Exception:
+        return None
 
 @mcp.tool()
 def directory_tree(path: str, max_depth: int = 4, exclude_dirs: Optional[List[str]] = None) -> str:
@@ -322,53 +520,6 @@ def directory_tree(path: str, max_depth: int = 4, exclude_dirs: Optional[List[st
     tree = build(root, 0)
     return json.dumps(tree, indent=2)
 
-class RooStyleEditTool:
-    """A robust, agent-friendly file editing tool."""
-    def count_occurrences(self, content: str, substr: str) -> int:
-        return content.count(substr) if substr else 0
-    def normalize_line_endings(self, content: str) -> str:
-        return content.replace('\r\n', '\n').replace('\r', '\n')
-
-    def escape_placeholders(self, content: str) -> str:
-        return content.replace('\\n', '__SANITIZED_NEWLINE__')
-
-    def unescape_placeholders(self, content: str) -> str:
-        return content.replace('__SANITIZED_NEWLINE__', '\\n')
-    
-    def _prepare_edit(self, file_path: str, old_string: str, new_string: str, expected_replacements: int) -> EditResult:
-        p = validate_path(file_path)
-        file_exists = p.exists()
-        is_new_file = not file_exists and old_string == ""
-        if not file_exists and not is_new_file:
-            return EditResult(success=False, message=f"File not found: {file_path}", error_type="file_not_found")
-        if file_exists and is_new_file:
-            return EditResult(success=False, message=f"File '{file_path}' already exists.", error_type="file_exists")
-        original_content = p.read_text(encoding='utf-8') if file_exists else ""
-        
-        # Escape literal `\n` before processing
-        escaped_original_content = self.escape_placeholders(original_content)
-        escaped_old_string = self.escape_placeholders(old_string)
-        escaped_new_string = self.escape_placeholders(new_string)
-
-        normalized_content = self.normalize_line_endings(escaped_original_content)
-        normalized_old = self.normalize_line_endings(escaped_old_string)
-        
-        if not is_new_file:
-            if old_string == new_string:
-                return EditResult(success=False, message="No changes to apply.", error_type="validation_error")
-            occurrences = self.count_occurrences(normalized_content, normalized_old)
-            if occurrences == 0:
-                return EditResult(success=False, message="No match found for 'old_string'.", error_type="validation_error")
-            if occurrences != expected_replacements:
-                return EditResult(success=False, message=f"Expected {expected_replacements} occurrences but found {occurrences}.", error_type="validation_error")
-        
-        # Perform the replacement on the escaped content
-        replaced_content = escaped_new_string if is_new_file else normalized_content.replace(normalized_old, self.escape_placeholders(new_string))
-        
-        # Unescape before returning the final content
-        new_content = self.unescape_placeholders(replaced_content)
-        
-        return EditResult(success=True, message="Edit prepared.", original_content=original_content, new_content=new_content)
 
 # --- Interactive Human-in-the-Loop Tools ---
 APPROVAL_KEYWORD = "##APPROVE##"
@@ -419,101 +570,15 @@ def propose_and_review(path: str, new_string: str, old_string: str = "", expecte
 
     It blocks and waits for the user to save the file, then returns their action ('APPROVE' or 'REVIEW').
     """
-    tool = RooStyleEditTool()
-    original_path_obj = Path(path)
-    active_proposal_content = ""
-
-    # --- Step 1: Determine Intent and Prepare Session ---
-    if session_path:
-        # --- INTENT: CONTINUING AN EXISTING SESSION ---
-        temp_dir = Path(session_path)
-        if not temp_dir.is_dir():
-            raise ValueError(f"Session path {session_path} does not exist.")
-        
-        current_file_path = temp_dir / f"current_{original_path_obj.name}"
-        future_file_path = temp_dir / f"future_{original_path_obj.name}"
-        
-        staged_content = tool.escape_placeholders(current_file_path.read_text(encoding='utf-8'))
-        
-        # The `old_string` is the "contextual anchor". We try to apply it as a patch.
-        occurrences = tool.count_occurrences(staged_content, tool.escape_placeholders(old_string))
-        
-        if occurrences != 1:
-            # SAFETY VALVE: The patch is ambiguous or invalid. Fail gracefully.
-            raise ValueError(f"Contextual patch failed. The provided 'old_string' anchor was found {occurrences} times in the user's last version, but expected exactly 1. Please provide the full file content as 'old_string' to recover.")
-            
-        # Patch successfully applied.
-        active_proposal_content = staged_content.replace(tool.escape_placeholders(old_string), tool.escape_placeholders(new_string), 1)
-        future_file_path.write_text(tool.unescape_placeholders(active_proposal_content), encoding='utf-8')
-        
-
-    else:
-        # --- INTENT: STARTING A NEW SESSION ---
-        temp_dir = Path(tempfile.mkdtemp(prefix="mcp_review_"))
-        current_file_path = temp_dir / f"current_{original_path_obj.name}"
-        future_file_path = temp_dir / f"future_{original_path_obj.name}"
-        
-        prep_result = tool._prepare_edit(path, old_string, new_string, expected_replacements)
-        if not prep_result.success:
-            if temp_dir.exists(): shutil.rmtree(temp_dir)
-            raise ValueError(f"Edit preparation failed: {prep_result.message} (Error type: {prep_result.error_type})")
-
-        if prep_result.original_content is not None:
-            current_file_path.write_text(prep_result.original_content, encoding='utf-8')
-        active_proposal_content = prep_result.new_content
-        if active_proposal_content is not None:
-            future_file_path.write_text(active_proposal_content, encoding='utf-8')
-
-    # --- Step 2: Display, Launch, and Wait for Human ---
-    vscode_command = f'code --diff "{current_file_path}" "{future_file_path}"'
-    
-    print(f"\n--- WAITING FOR HUMAN REVIEW ---\nPlease review the proposed changes in VS Code:\n\n{vscode_command}\n")
-    print(f'To approve, add a double newline to the end of the file before saving.')
-    if IS_VSCODE_CLI_AVAILABLE:
-        try:
-            subprocess.Popen(vscode_command, shell=True)
-            print("✅ Automatically launched VS Code diff view.")
-        except Exception as e:
-            print(f"⚠️ Failed to launch VS Code automatically: {e}")
-
-    initial_mod_time = future_file_path.stat().st_mtime
-    while True:
-        time.sleep(1)
-        if future_file_path.stat().st_mtime > initial_mod_time: break
-    
-    # --- Step 3: Interpret User's Action ---
-    user_edited_content = future_file_path.read_text(encoding='utf-8')
-    response = {"session_path": str(temp_dir)}
-
-    if user_edited_content.endswith("\n\n"):
-        # Remove trailing newlines
-        clean_content = user_edited_content.rstrip('\n')
-        
-        try:
-            future_file_path.write_text(clean_content, encoding='utf-8')
-            print("✅ Approval detected. You can safely close the diff view.")
-        except Exception as e:
-            print(f"⚠️ Could not auto-remove keyword from review file: {e}")
-        response["user_action"] = "APPROVE"
-        response["message"] = "User has approved the changes. Call 'commit_review' to finalize."
-    else:
-        current_file_path.write_text(user_edited_content, encoding='utf-8')
-        
-        # Escape content before diffing
-        escaped_proposal = tool.escape_placeholders(active_proposal_content) if active_proposal_content is not None else ""
-        escaped_user_content = tool.escape_placeholders(user_edited_content)
-
-        user_feedback_diff = "".join(difflib.unified_diff(
-            escaped_proposal.splitlines(keepends=True),
-            escaped_user_content.splitlines(keepends=True),
-            fromfile=f"a/{future_file_path.name} (agent proposal)",
-            tofile=f"b/{future_file_path.name} (user feedback)"
-        ))
-        response["user_action"] = "REVIEW"
-        response["message"] = "User provided feedback. A diff is included. Propose a new edit against the updated content."
-        response["user_feedback_diff"] = tool.unescape_placeholders(user_feedback_diff)
-        
-    return json.dumps(response, indent=2)
+    return propose_and_review_logic(
+        validate_path,
+        IS_VSCODE_CLI_AVAILABLE,
+        path,
+        new_string,
+        old_string,
+        expected_replacements,
+        session_path
+    )
 
 @mcp.tool()
 def commit_review(session_path: str, original_path: str) -> str:

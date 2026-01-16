@@ -6,6 +6,8 @@ class FileReadRequest(BaseModel):
     path: str
     head: Optional[int] = None
     tail: Optional[int] = None
+    start_line: Optional[int] = None
+    end_line: Optional[int] = None
 
 
 import os
@@ -191,15 +193,21 @@ def read_files(files: List[FileReadRequest]) -> str:
             
         try:
             path_obj = validate_path(file_request.path)
-            if file_request.head is not None and file_request.tail is not None:
-                raise ValueError("Cannot specify both head and tail for a single file.")
-            
+            if (file_request.head is not None or file_request.tail is not None) and \
+               (file_request.start_line is not None or file_request.end_line is not None):
+                raise ValueError("Cannot mix start_line/end_line with head/tail.")
+
             if path_obj.is_dir():
                 content = "Error: Is a directory"
             else:
                 try:
                     with open(path_obj, 'r', encoding='utf-8') as f:
-                        if file_request.head is not None:
+                        if file_request.start_line is not None or file_request.end_line is not None:
+                            lines = f.readlines()
+                            start = (file_request.start_line or 1) - 1
+                            end = file_request.end_line or len(lines)
+                            content = "".join(lines[start:end])
+                        elif file_request.head is not None:
                             content = "".join([next(f) for _ in range(file_request.head)])
                         elif file_request.tail is not None:
                             content = "".join(f.readlines()[-file_request.tail:])

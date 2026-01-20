@@ -30,7 +30,7 @@ from .edit_tool import EditResult, RooStyleEditTool, propose_and_review_logic
 # --- Global Configuration ---
 USER_ACCESSIBLE_DIRS: List[Path] = []
 ALLOWED_DIRS: List[Path] = []
-mcp = FastMCP("filesystem")
+mcp = FastMCP("filesystem", stateless_http=True)
 IS_VSCODE_CLI_AVAILABLE = False
 
 

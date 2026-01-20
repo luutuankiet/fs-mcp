@@ -1,5 +1,7 @@
 import argparse
 from fs_mcp import server
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
 
 def main():
     """
@@ -12,12 +14,25 @@ def main():
     parser.add_argument("dirs", nargs="*")
     args = parser.parse_args()
     
+    # Define the CORS middleware using Starlette's Middleware class
+    middleware = [
+        Middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+    ]
+    
     try:
         server.initialize(args.dirs)
+        # Pass the middleware to the run command
         server.mcp.run(
             transport="streamable-http",
             host=args.host,
-            port=args.port
+            port=args.port,
+            middleware=middleware
         )
     except KeyboardInterrupt:
         pass # The main process will handle termination.

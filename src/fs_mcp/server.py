@@ -535,6 +535,12 @@ def propose_and_review(path: str, new_string: str, old_string: str = "", expecte
     and `new_string` arguments. The system handles the conversion to and from
     the placeholders automatically.
 
+    **BEST PRACTICE - MINIMAL CONTEXT:**
+    When using Intent 1 (Patch), do NOT provide the full file content in `old_string`.
+    Instead, provide only the specific lines you want to change, plus just enough
+    surrounding lines (1-2) to ensure uniqueness. This prevents context errors and
+    improves performance on large files.
+
     Intents:
 
     1.  **Start New Review (Patch):** Provide `path`, `old_string`, `new_string`. Validates the patch against the original file.

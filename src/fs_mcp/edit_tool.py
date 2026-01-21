@@ -56,14 +56,19 @@ class RooStyleEditTool:
         if not is_new_file:
             if old_string == new_string:
                 return EditResult(success=False, message="No changes to apply.", error_type="validation_error")
-            occurrences = self.count_occurrences(normalized_content, normalized_old)
-            if occurrences == 0:
-                return EditResult(success=False, message="No match found for 'old_string'.", error_type="validation_error")
-            if occurrences != expected_replacements:
-                return EditResult(success=False, message=f"Expected {expected_replacements} occurrences but found {occurrences}.", error_type="validation_error")
-
-        # Perform the replacement on the escaped content
-        replaced_content = sanitized_new_string if is_new_file else normalized_content.replace(normalized_old, self.sanitize_content(new_string))
+            
+            # If old_string is empty, it's a full rewrite of an existing file.
+            if not old_string:
+                replaced_content = sanitized_new_string
+            else:
+                occurrences = self.count_occurrences(normalized_content, normalized_old)
+                if occurrences == 0:
+                    return EditResult(success=False, message="No match found for 'old_string'.", error_type="validation_error")
+                if occurrences != expected_replacements:
+                    return EditResult(success=False, message=f"Expected {expected_replacements} occurrences but found {occurrences}.", error_type="validation_error")
+                replaced_content = normalized_content.replace(normalized_old, sanitized_new_string)
+        else:
+            replaced_content = sanitized_new_string
 
         # Unescape before returning the final content
         new_content = self.desanitize_content(replaced_content)

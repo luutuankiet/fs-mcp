@@ -165,23 +165,12 @@ def read_files(files: List[FileReadRequest]) -> str:
     ```
 
     **LITERAL NEWLINE PROTOCOL:** This tool sanitizes file content to prevent ambiguity
-    between actual newlines and literal `\n` characters. Any literal newline characters (represented
-    as `\\n` in Python strings) found in a file are replaced with the placeholder
-    `__SANITIZED_NEWLINE__`. When proposing edits (e.g., with `propose_and_review`),
-    you MUST use this placeholder to represent literal `\n` characters in your `old_string` and
-    `new_string` arguments. The system will automatically convert the placeholder back to `\\n`
-    before writing the final content to disk.
-
-    **Example 1: A simple string**
-    - If a file contains the raw text `print("Hello\nWorld")`, this tool will return the string
-      `print("Hello__SANITIZED_NEWLINE__World")`.
-    - To change this line, your `old_string` must be
-      `print("Hello__SANITIZED_NEWLINE__World")`.
-
-    **Example 2: An f-string**
-    - If a file contains `print(f"Debug: \n{json.dumps(request_json)}")`, this tool will return
-      `print(f"Debug: __SANITIZED_NEWLINE__{json.dumps(request_json)}")`.
-    - To modify it, your `old_string` must use the placeholder.
+    between actual newlines and literal `\n` characters. Any special characters (like literal
+    backslashes and newlines) are replaced with unique placeholders. When proposing edits
+    (e.g., with `propose_and_review`), you MUST use the exact sanitized content provided by
+    this tool in your `old_string` and `new_string` arguments. The system will automatically
+    convert the placeholders back to their original characters before writing the final
+    content to disk.
     """
     results = []
     tool = RooStyleEditTool(validate_path)
@@ -216,7 +205,7 @@ def read_files(files: List[FileReadRequest]) -> str:
                 except UnicodeDecodeError:
                     content = "Error: Binary file. Use read_media_file."
             
-            results.append(f"File: {file_request.path}\n{tool.escape_placeholders(content)}")
+            results.append(f"File: {file_request.path}\n{tool.sanitize_content(content)}")
         except Exception as e:
             results.append(f"File: {file_request.path}\nError: {e}")
             
@@ -541,26 +530,10 @@ def propose_and_review(path: str, new_string: str, old_string: str = "", expecte
     Starts or continues an interactive review session using a VS Code diff view. This smart tool adapts its behavior based on the arguments provided.
 
     **LITERAL NEWLINE PROTOCOL:** This tool operates on sanitized content.
-    The `read_files` tool replaces any literal `\n` characters (represented as `\\n`
-    in Python strings) with `__SANITIZED_NEWLINE__`.
-    You MUST use this placeholder in your `old_string` and `new_string` arguments
-    when you intend to match or write a literal `\n`. The system handles the
-    conversion to and from the placeholder automatically.
-
-    **Example:**
-    - To change the file content from `print("Hello\nWorld")` to `print("Hi\nUniverse")`,
-      you would first receive the sanitized content from `read_files` as
-      `print("Hello__SANITIZED_NEWLINE__World")`.
-    - Your call to this tool must then be:
-      - `old_string`: `"print("Hello__SANITIZED_NEWLINE__World")"`
-      - `new_string`: `"print("Hi__SANITIZED_NEWLINE__Universe")"`
-
-    **Scenario: Using User-Provided Content**
-    If you receive content directly from a user prompt that contains a literal `\n`,
-    you MUST manually replace it with the placeholder before calling this tool.
-
-    - **User prompt might contain:** `print(f"Debug: \n{json.dumps(request_json)}")`
-    - **Your `new_string` MUST be:** `print(f"Debug: __SANITIZED_NEWLINE__{json.dumps(request_json)}")`
+    The `read_files` tool replaces special characters with unique placeholders.
+    You MUST use the exact sanitized content from `read_files` in your `old_string`
+    and `new_string` arguments. The system handles the conversion to and from
+    the placeholders automatically.
 
     Intents:
 

@@ -29,11 +29,11 @@ class RooStyleEditTool:
     def normalize_line_endings(self, content: str) -> str:
         return content.replace('\r\n', '\n').replace('\r', '\n')
 
-    def escape_placeholders(self, content: str) -> str:
-        return content.replace('\\n', '\n')
+    def sanitize_content(self, content: str) -> str:
+        return content.replace('\\', '_ROO_PLACEHOLDER_BS_').replace('\n', '_ROO_PLACEHOLDER_NL_').replace('\r', '_ROO_PLACEHOLDER_CR_')
 
-    def unescape_placeholders(self, content: str) -> str:
-        return content.replace('__SANITIZED_NEWLINE__', '\\n')
+    def desanitize_content(self, content: str) -> str:
+        return content.replace('_ROO_PLACEHOLDER_CR_', '\r').replace('_ROO_PLACEHOLDER_NL_', '\n').replace('_ROO_PLACEHOLDER_BS_', '\\')
 
     def _prepare_edit(self, file_path: str, old_string: str, new_string: str, expected_replacements: int) -> EditResult:
         p = self.validate_path(file_path)
@@ -46,12 +46,12 @@ class RooStyleEditTool:
         original_content = p.read_text(encoding='utf-8') if file_exists else ""
 
         # Escape literal `\n` before processing
-        escaped_original_content = self.escape_placeholders(original_content)
-        escaped_old_string = self.escape_placeholders(old_string)
-        escaped_new_string = self.escape_placeholders(new_string)
+        sanitized_original_content = self.sanitize_content(original_content)
+        sanitized_old_string = self.sanitize_content(old_string)
+        sanitized_new_string = self.sanitize_content(new_string)
 
-        normalized_content = self.normalize_line_endings(escaped_original_content)
-        normalized_old = self.normalize_line_endings(escaped_old_string)
+        normalized_content = self.normalize_line_endings(sanitized_original_content)
+        normalized_old = self.normalize_line_endings(sanitized_old_string)
 
         if not is_new_file:
             if old_string == new_string:
@@ -63,10 +63,10 @@ class RooStyleEditTool:
                 return EditResult(success=False, message=f"Expected {expected_replacements} occurrences but found {occurrences}.", error_type="validation_error")
 
         # Perform the replacement on the escaped content
-        replaced_content = escaped_new_string if is_new_file else normalized_content.replace(normalized_old, self.escape_placeholders(new_string))
+        replaced_content = sanitized_new_string if is_new_file else normalized_content.replace(normalized_old, self.sanitize_content(new_string))
 
         # Unescape before returning the final content
-        new_content = self.unescape_placeholders(replaced_content)
+        new_content = self.desanitize_content(replaced_content)
 
         return EditResult(success=True, message="Edit prepared.", original_content=original_content, new_content=new_content)
 
@@ -94,18 +94,18 @@ def propose_and_review_logic(
         current_file_path = temp_dir / f"current_{original_path_obj.name}"
         future_file_path = temp_dir / f"future_{original_path_obj.name}"
         
-        staged_content = tool.escape_placeholders(current_file_path.read_text(encoding='utf-8'))
+        staged_content = tool.sanitize_content(current_file_path.read_text(encoding='utf-8'))
         
         # The `old_string` is the "contextual anchor". We try to apply it as a patch.
-        occurrences = tool.count_occurrences(staged_content, tool.escape_placeholders(old_string))
+        occurrences = tool.count_occurrences(staged_content, tool.sanitize_content(old_string))
         
         if occurrences != 1:
             # SAFETY VALVE: The patch is ambiguous or invalid. Fail gracefully.
             raise ValueError(f"Contextual patch failed. The provided 'old_string' anchor was found {occurrences} times in the user's last version, but expected exactly 1. Please provide the full file content as 'old_string' to recover.")
             
         # Patch successfully applied.
-        active_proposal_content = staged_content.replace(tool.escape_placeholders(old_string), tool.escape_placeholders(new_string), 1)
-        future_file_path.write_text(tool.unescape_placeholders(active_proposal_content), encoding='utf-8')
+        active_proposal_content = staged_content.replace(tool.sanitize_content(old_string), tool.sanitize_content(new_string), 1)
+        future_file_path.write_text(tool.desanitize_content(active_proposal_content), encoding='utf-8')
         
 
     else:
@@ -161,17 +161,17 @@ def propose_and_review_logic(
         current_file_path.write_text(user_edited_content, encoding='utf-8')
         
         # Escape content before diffing
-        escaped_proposal = tool.escape_placeholders(active_proposal_content) if active_proposal_content is not None else ""
-        escaped_user_content = tool.escape_placeholders(user_edited_content)
+        sanitized_proposal = tool.sanitize_content(active_proposal_content) if active_proposal_content is not None else ""
+        sanitized_user_content = tool.sanitize_content(user_edited_content)
 
         user_feedback_diff = "".join(difflib.unified_diff(
-            escaped_proposal.splitlines(keepends=True),
-            escaped_user_content.splitlines(keepends=True),
+            sanitized_proposal.splitlines(keepends=True),
+            sanitized_user_content.splitlines(keepends=True),
             fromfile=f"a/{future_file_path.name} (agent proposal)",
             tofile=f"b/{future_file_path.name} (user feedback)"
         ))
         response["user_action"] = "REVIEW"
         response["message"] = "User provided feedback. A diff is included. Propose a new edit against the updated content."
-        response["user_feedback_diff"] = tool.unescape_placeholders(user_feedback_diff)
+        response["user_feedback_diff"] = tool.desanitize_content(user_feedback_diff)
         
     return json.dumps(response, indent=2)

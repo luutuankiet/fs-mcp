@@ -124,14 +124,14 @@ def test_literal_newline_sanitization_protocol(temp_env):
     
     # --- Step 2: Test `read_files` sanitization ---
     read_result = server.read_files.fn([{"path": str(target)}])
-    sanitized_content = 'print("Hello__SANITIZED_NEWLINE__World")'
+    sanitized_content = 'print("Hello_ROO_PLACEHOLDER_BS_nWorld")'
     assert sanitized_content in read_result
     
     # --- Step 3: Test `propose_and_review` with sanitized content ---
-    new_sanitized_content = 'print("Hi__SANITIZED_NEWLINE__Universe")'
+    new_sanitized_content = 'print("Hi_ROO_PLACEHOLDER_BS_nUniverse")'
     
     # We can't fully test the interactive part, so we'll check the preparation
-    tool = server.RooStyleEditTool()
+    tool = server.RooStyleEditTool(validate_path_func=lambda p: Path(p))
     prep_result = tool._prepare_edit(
         file_path=str(target),
         old_string=sanitized_content,

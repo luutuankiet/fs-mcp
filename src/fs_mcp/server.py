@@ -599,19 +599,17 @@ def grounding_search(query: str) -> str:
 @mcp.tool()
 def append_text(path: str, content: str) -> str:
     """
-    Append text to the end of a file. 
+    Append text to the end of a file. If the file does not exist, it will be created.
     Use this as a fallback if edit_file fails to find a match.
     Prefer relative paths.
     """
     p = validate_path(path)
-    if not p.exists():
-        raise FileNotFoundError(f"File not found: {path}. Cannot append to a non-existent file.")
     
     # Ensure there is a newline at the start of the append if the file doesn't have one
     # to avoid clashing with the existing last line.
     with open(p, 'a', encoding='utf-8') as f:
         # Check if we need a leading newline
-        if p.stat().st_size > 0:
+        if p.exists() and p.stat().st_size > 0:
             f.write("\n")
         f.write(content)
         

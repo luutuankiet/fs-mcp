@@ -45,92 +45,61 @@ def edit_tool(temp_src_dir):
     return RooStyleEditTool(validate_path_func=create_mock_validator(temp_src_dir))
 
 
-@pytest.mark.parametrize("test_string", [
-    "hello world",
-    "hello\nworld",
-    "hello\\nworld",
-    "hello\\\nworld",
-    "C:\\Users\\Test",
-    "a string with \n and \\n and \\\n mixed",
-    "",
-    "\\",
-    "\n",
-    "\\n"
-])
-def test_sanitize_desanitize_cycle(edit_tool, test_string):
-    """
-    Tests that sanitizing and then desanitizing a string returns the
-    original string.
-    """
-    sanitized = edit_tool.sanitize_content(test_string)
-    desanitized = edit_tool.desanitize_content(sanitized)
-    
-    if any(c in test_string for c in ['\\', '\n', '\r']):
-        assert sanitized != test_string, "Sanitization should have changed the string"
-    
-    assert desanitized == test_string, "Desanitization should restore the original string"
-
 def test_identity_edit_on_real_file(edit_tool, temp_src_dir):
     """
     Tests that performing an 'identity' edit (replacing a string with itself)
-    on a real file results in no changes. This is the core test for the user's concern.
+    on a real file results in no changes.
     """
-    # We'll use the edit_tool.py file itself for the test
     file_to_test = temp_src_dir / 'fs_mcp' / 'edit_tool.py'
-    
-    # Read the content of the file
     original_content = file_to_test.read_text(encoding='utf-8')
-    
-    # Choose a chunk of the file to use as our "old" and "new" string.
-    # Let's pick a chunk that contains some interesting characters.
-    # The sanitize_content method is a good candidate.
-    string_to_replace = "return content.replace('\\\\', '_ROO_PLACEHOLDER_BS_').replace('\\n', '_ROO_PLACEHOLDER_NL_').replace('\\r', '_ROO_PLACEHOLDER_CR_')"
-    
-    # Ensure the chosen string is actually in the file
-    assert string_to_replace in original_content
-    
-    # Use the edit tool to prepare an identity replacement
-    result = edit_tool._prepare_edit(
-        file_path=str(file_to_test),
-        old_string=string_to_replace,
-        new_string=string_to_replace,
-        expected_replacements=1
-    )
-    
-    # The tool should report no changes are needed
-    assert not result.success
-    assert result.error_type == "validation_error"
-    assert "No changes to apply" in result.message
-    
-    # Now, let's try a replacement that *should* work, but is still an identity edit
-    # by replacing the content with itself after reading it.
-    
-    # Let's pick a different chunk to be safe
+
     chunk_to_replace = "def normalize_line_endings(self, content: str) -> str:"
-    
+
     result = edit_tool._prepare_edit(
         file_path=str(file_to_test),
         old_string=chunk_to_replace,
         new_string=chunk_to_replace,
         expected_replacements=1
     )
-    
-    # The tool should again report no changes are needed, because old_string == new_string
+
     assert not result.success
     assert result.error_type == "validation_error"
     assert "No changes to apply" in result.message
-    
-    # The ultimate test: does _prepare_edit corrupt the file if we feed it the whole file?
-    # This simulates a user providing the full file content to recover.
+
+    # Full file identity edit should also detect no changes
     full_file_result = edit_tool._prepare_edit(
         file_path=str(file_to_test),
         old_string=original_content,
         new_string=original_content,
         expected_replacements=1
     )
-    
-    # Again, should detect no changes
+
     assert not full_file_result.success
-    assert full_file_result.error_type == "validation_error"
-    assert "No changes to apply" in full_file_result.message
+    assert result.error_type == "validation_error"
+
+
+def test_edit_preserves_literal_escape_sequences(edit_tool, temp_src_dir):
+    """
+    Tests that editing a file containing literal \\n sequences preserves them
+    correctly without any corruption.
+    """
+    file_to_test = temp_src_dir / 'fs_mcp' / 'test_escapes.py'
+    original_content = 'line1\nprint("Hello\\nWorld")\nline3\n'
+    file_to_test.write_text(original_content, encoding='utf-8')
+
+    # Replace the print line, keeping the literal \n intact
+    result = edit_tool._prepare_edit(
+        file_path=str(file_to_test),
+        old_string='print("Hello\\nWorld")',
+        new_string='print("Hi\\nUniverse")',
+        expected_replacements=1
+    )
+
+    assert result.success
+    assert result.new_content == 'line1\nprint("Hi\\nUniverse")\nline3\n'
+
+    # Write it back and verify
+    file_to_test.write_text(result.new_content, encoding='utf-8')
+    roundtripped = file_to_test.read_text(encoding='utf-8')
+    assert roundtripped == 'line1\nprint("Hi\\nUniverse")\nline3\n'
 

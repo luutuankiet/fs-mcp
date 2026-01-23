@@ -114,42 +114,36 @@ def test_temp_file_access_security(temp_env):
     with pytest.raises(ValueError, match="Access denied"):
         server.validate_path(str(rogue_file))
         
-def test_literal_newline_sanitization_protocol(temp_env):
-    """Test the literal newline sanitization protocol."""
-    target = temp_env / "test_newline.txt"
-    
-    # --- Step 1: Create a file with a literal \n ---
+def test_literal_newline_roundtrip(temp_env):
+    """Test that files with literal \\n are preserved through read/write/edit roundtrips."""
+    target = temp_env / "test_newline.py"
+
+    # --- Step 1: Create a file with literal \n escape sequences ---
     raw_content = 'print("Hello\\nWorld")'
     server.write_file.fn(str(target), raw_content)
-    
-    # --- Step 2: Test `read_files` sanitization ---
+
+    # --- Step 2: read_files should return the content as-is ---
     read_result = server.read_files.fn([{"path": str(target)}])
-    sanitized_content = 'print("Hello_ROO_PLACEHOLDER_BS_nWorld")'
-    assert sanitized_content in read_result
-    
-    # --- Step 3: Test `propose_and_review` with sanitized content ---
-    new_sanitized_content = 'print("Hi_ROO_PLACEHOLDER_BS_nUniverse")'
-    
-    # We can't fully test the interactive part, so we'll check the preparation
+    assert 'print("Hello\\nWorld")' in read_result
+
+    # --- Step 3: Edit using exact content from read ---
     tool = server.RooStyleEditTool(validate_path_func=lambda p: Path(p))
     prep_result = tool._prepare_edit(
         file_path=str(target),
-        old_string=sanitized_content,
-        new_string=new_sanitized_content,
+        old_string='print("Hello\\nWorld")',
+        new_string='print("Hi\\nUniverse")',
         expected_replacements=1
     )
-    
+
     assert prep_result.success
-    
-    # The new_content should have the placeholder unescaped back to the literal \n
-    expected_new_content = 'print("Hi\\nUniverse")'
-    assert prep_result.new_content == expected_new_content
-    
-    # --- Step 4: Simulate a simplified end-to-end workflow ---
-    # In a real scenario, the agent would use the sanitized strings.
-    # Here, we'll manually apply the change to confirm the logic.
+    assert prep_result.new_content == 'print("Hi\\nUniverse")'
+
+    # --- Step 4: Write back and verify file on disk ---
     server.write_file.fn(str(target), prep_result.new_content)
-    final_content = target.read_text()
-    
-    assert final_content == expected_new_content
+    final_content = target.read_text(encoding='utf-8')
+    assert final_content == 'print("Hi\\nUniverse")'
+
+    # --- Step 5: Re-read and confirm no corruption ---
+    re_read = server.read_files.fn([{"path": str(target)}])
+    assert 'print("Hi\\nUniverse")' in re_read
 

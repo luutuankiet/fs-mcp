@@ -164,16 +164,8 @@ def read_files(files: List[FileReadRequest]) -> str:
     # Note: To skip to a specific section, calculate offset based on line numbers
     ```
 
-    **LITERAL NEWLINE PROTOCOL:** This tool sanitizes file content to prevent ambiguity
-    between actual newlines and literal `\n` characters. Any special characters (like literal
-    backslashes and newlines) are replaced with unique placeholders. When proposing edits
-    (e.g., with `propose_and_review`), you MUST use the exact sanitized content provided by
-    this tool in your `old_string` and `new_string` arguments. The system will automatically
-    convert the placeholders back to their original characters before writing the final
-    content to disk.
     """
     results = []
-    tool = RooStyleEditTool(validate_path)
     for file_request_data in files:
         if isinstance(file_request_data, dict):
             file_request = FileReadRequest(**file_request_data)
@@ -205,7 +197,7 @@ def read_files(files: List[FileReadRequest]) -> str:
                 except UnicodeDecodeError:
                     content = "Error: Binary file. Use read_media_file."
             
-            results.append(f"File: {file_request.path}\n{tool.sanitize_content(content)}")
+            results.append(f"File: {file_request.path}\n{content}")
         except Exception as e:
             results.append(f"File: {file_request.path}\nError: {e}")
             
@@ -528,12 +520,6 @@ APPROVAL_KEYWORD = "##APPROVE##"
 def propose_and_review(path: str, new_string: str, old_string: str = "", expected_replacements: int = 1, session_path: Optional[str] = None) -> str:
     """
     Starts or continues an interactive review session using a VS Code diff view. This smart tool adapts its behavior based on the arguments provided.
-
-    **LITERAL NEWLINE PROTOCOL:** This tool operates on sanitized content.
-    The `read_files` tool replaces special characters with unique placeholders.
-    You MUST use the exact sanitized content from `read_files` in your `old_string`
-    and `new_string` arguments. The system handles the conversion to and from
-    the placeholders automatically.
 
     **BEST PRACTICE - MINIMAL CONTEXT:**
     When using Intent 1 (Patch), do NOT provide the full file content in `old_string`.

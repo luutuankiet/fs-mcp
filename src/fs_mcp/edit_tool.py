@@ -85,6 +85,24 @@ def propose_and_review_logic(
     expected_replacements: int = 1,
     session_path: Optional[str] = None
 ) -> str:
+    # --- GSD-Lite Auto-Approve ---
+    if 'gsd_lite' in Path(path).parts:
+        tool = RooStyleEditTool(validate_path)
+        prep_result = tool._prepare_edit(path, old_string, new_string, expected_replacements)
+        if not prep_result.success:
+            raise ValueError(f"Edit preparation failed: {prep_result.message} (Error type: {prep_result.error_type})")
+        
+        if prep_result.new_content is not None:
+            p = validate_path(path)
+            p.write_text(prep_result.new_content, encoding='utf-8')
+        
+        response = {
+            "user_action": "AUTO_APPROVED",
+            "message": f"Auto-approved and committed changes to '{path}' because it is in the 'gsd_lite' directory.",
+            "session_path": None # No session needed for auto-commit
+        }
+        return json.dumps(response, indent=2)
+
     tool = RooStyleEditTool(validate_path)
     original_path_obj = Path(path)
     active_proposal_content = ""

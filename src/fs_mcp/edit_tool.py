@@ -70,40 +70,78 @@ def propose_and_review_logic(
     new_string: str,
     old_string: str = "",
     expected_replacements: int = 1,
-    session_path: Optional[str] = None
+    session_path: Optional[str] = None,
+    edits: Optional[list] = None
 ) -> str:
+    # --- Validate multi-edit parameter ---
+    edit_pairs = None
+    if edits:
+        if not isinstance(edits, list) or len(edits) == 0:
+            raise ValueError("'edits' must be a non-empty list.")
+        for i, pair in enumerate(edits):
+            if not isinstance(pair, dict) or 'old_string' not in pair or 'new_string' not in pair:
+                raise ValueError(f"Edit at index {i} must have 'old_string' and 'new_string' keys.")
+        edit_pairs = edits
+
     # --- GSD-Lite Auto-Approve ---
     if 'gsd-lite' in Path(path).parts:
         tool = RooStyleEditTool(validate_path)
-        prep_result = tool._prepare_edit(path, old_string, new_string, expected_replacements)
-        if not prep_result.success:
-            error_response = {
-                "error": True,
-                "error_type": prep_result.error_type,
-                "message": f"Edit preparation failed: {prep_result.message}",
-            }
-            if prep_result.error_type == "validation_error":
-                p = Path(path)
-                if p.exists():
-                    content = p.read_text(encoding='utf-8')
+        if edit_pairs:
+            p = validate_path(path)
+            content = p.read_text(encoding='utf-8') if p.exists() else ""
+            normalized = tool.normalize_line_endings(content)
+            for i, pair in enumerate(edit_pairs):
+                old_s = tool.normalize_line_endings(pair['old_string'])
+                new_s = pair['new_string']
+                if old_s and normalized.count(old_s) != 1:
+                    error_response = {
+                        "error": True,
+                        "error_type": "validation_error",
+                        "message": f"Edit {i}: old_string found {normalized.count(old_s)} times, expected 1.",
+                    }
                     line_count = content.count('\n') + 1
                     if line_count < 5000:
                         error_response["file_content"] = content
-                        error_response["hint"] = f"File has {line_count} lines. Content included above — use it to correct your old_string."
-                    else:
-                        error_response["hint"] = f"File has {line_count} lines (too large to include). Re-read the file to get the current content before retrying."
-            raise ValueError(json.dumps(error_response, indent=2))
-        
-        if prep_result.new_content is not None:
-            p = validate_path(path)
-            p.write_text(prep_result.new_content, encoding='utf-8')
-        
-        response = {
-            "user_action": "AUTO_APPROVED",
-            "message": f"Auto-approved and committed changes to '{path}' because it is in the 'gsd_lite' directory.",
-            "session_path": None # No session needed for auto-commit
-        }
-        return json.dumps(response, indent=2)
+                        error_response["hint"] = f"File has {line_count} lines. Content included above — use it to correct your old_string for edit {i}."
+                    raise ValueError(json.dumps(error_response, indent=2))
+                normalized = normalized.replace(old_s, new_s, 1) if old_s else new_s
+            p.write_text(normalized, encoding='utf-8')
+            response = {
+                "user_action": "AUTO_APPROVED",
+                "message": f"Auto-approved and committed {len(edit_pairs)} edits to '{path}' because it is in the 'gsd_lite' directory.",
+                "session_path": None
+            }
+            return json.dumps(response, indent=2)
+        else:
+            prep_result = tool._prepare_edit(path, old_string, new_string, expected_replacements)
+            if not prep_result.success:
+                error_response = {
+                    "error": True,
+                    "error_type": prep_result.error_type,
+                    "message": f"Edit preparation failed: {prep_result.message}",
+                }
+                if prep_result.error_type == "validation_error":
+                    p = Path(path)
+                    if p.exists():
+                        content = p.read_text(encoding='utf-8')
+                        line_count = content.count('\n') + 1
+                        if line_count < 5000:
+                            error_response["file_content"] = content
+                            error_response["hint"] = f"File has {line_count} lines. Content included above — use it to correct your old_string."
+                        else:
+                            error_response["hint"] = f"File has {line_count} lines (too large to include). Re-read the file to get the current content before retrying."
+                raise ValueError(json.dumps(error_response, indent=2))
+
+            if prep_result.new_content is not None:
+                p = validate_path(path)
+                p.write_text(prep_result.new_content, encoding='utf-8')
+
+            response = {
+                "user_action": "AUTO_APPROVED",
+                "message": f"Auto-approved and committed changes to '{path}' because it is in the 'gsd_lite' directory.",
+                "session_path": None
+            }
+            return json.dumps(response, indent=2)
 
     tool = RooStyleEditTool(validate_path)
     original_path_obj = Path(path)
@@ -115,33 +153,56 @@ def propose_and_review_logic(
         temp_dir = Path(session_path)
         if not temp_dir.is_dir():
             raise ValueError(f"Session path {session_path} does not exist.")
-        
+
         current_file_path = temp_dir / f"current_{original_path_obj.name}"
         future_file_path = temp_dir / f"future_{original_path_obj.name}"
-        
+
         staged_content = current_file_path.read_text(encoding='utf-8')
 
-        # The `old_string` is the "contextual anchor". We try to apply it as a patch.
-        occurrences = tool.count_occurrences(staged_content, old_string)
+        if edit_pairs:
+            # --- MULTI-EDIT CONTINUATION ---
+            normalized = tool.normalize_line_endings(staged_content)
+            for i, pair in enumerate(edit_pairs):
+                old_s = tool.normalize_line_endings(pair['old_string'])
+                new_s = pair['new_string']
+                if old_s:
+                    occurrences = tool.count_occurrences(normalized, old_s)
+                    if occurrences != 1:
+                        error_response = {
+                            "error": True,
+                            "error_type": "validation_error",
+                            "message": f"Edit {i}: old_string found {occurrences} times in session content, expected 1.",
+                        }
+                        line_count = staged_content.count('\n') + 1
+                        if line_count < 5000:
+                            error_response["file_content"] = staged_content
+                            error_response["hint"] = f"Session file has {line_count} lines. Content included above — use it to correct your old_string for edit {i}."
+                        raise ValueError(json.dumps(error_response, indent=2))
+                    normalized = normalized.replace(old_s, new_s, 1)
+                else:
+                    normalized = new_s
+            active_proposal_content = normalized
+            future_file_path.write_text(active_proposal_content, encoding='utf-8')
+        else:
+            # --- SINGLE-EDIT CONTINUATION ---
+            occurrences = tool.count_occurrences(staged_content, old_string)
 
-        if occurrences != 1:
-            # SAFETY VALVE: The patch is ambiguous or invalid. Fail gracefully.
-            error_response = {
-                "error": True,
-                "error_type": "validation_error",
-                "message": f"Contextual patch failed. The provided 'old_string' anchor was found {occurrences} times in the user's last version, but expected exactly 1.",
-            }
-            line_count = staged_content.count('\n') + 1
-            if line_count < 5000:
-                error_response["file_content"] = staged_content
-                error_response["hint"] = f"Session file has {line_count} lines. Content included above — use it to correct your old_string."
-            else:
-                error_response["hint"] = f"Session file has {line_count} lines (too large to include). Re-read the file to get the current content before retrying."
-            raise ValueError(json.dumps(error_response, indent=2))
+            if occurrences != 1:
+                error_response = {
+                    "error": True,
+                    "error_type": "validation_error",
+                    "message": f"Contextual patch failed. The provided 'old_string' anchor was found {occurrences} times in the user's last version, but expected exactly 1.",
+                }
+                line_count = staged_content.count('\n') + 1
+                if line_count < 5000:
+                    error_response["file_content"] = staged_content
+                    error_response["hint"] = f"Session file has {line_count} lines. Content included above — use it to correct your old_string."
+                else:
+                    error_response["hint"] = f"Session file has {line_count} lines (too large to include). Re-read the file to get the current content before retrying."
+                raise ValueError(json.dumps(error_response, indent=2))
 
-        # Patch successfully applied.
-        active_proposal_content = staged_content.replace(old_string, new_string, 1)
-        future_file_path.write_text(active_proposal_content, encoding='utf-8')
+            active_proposal_content = staged_content.replace(old_string, new_string, 1)
+            future_file_path.write_text(active_proposal_content, encoding='utf-8')
         
 
     else:
@@ -149,30 +210,83 @@ def propose_and_review_logic(
         temp_dir = Path(tempfile.mkdtemp(prefix="mcp_review_"))
         current_file_path = temp_dir / f"current_{original_path_obj.name}"
         future_file_path = temp_dir / f"future_{original_path_obj.name}"
-        
-        prep_result = tool._prepare_edit(path, old_string, new_string, expected_replacements)
-        if not prep_result.success:
-            if temp_dir.exists(): shutil.rmtree(temp_dir)
-            error_response = {
-                "error": True,
-                "error_type": prep_result.error_type,
-                "message": f"Edit preparation failed: {prep_result.message}",
-            }
-            if prep_result.error_type == "validation_error" and original_path_obj.exists():
-                content = original_path_obj.read_text(encoding='utf-8')
-                line_count = content.count('\n') + 1
-                if line_count < 5000:
-                    error_response["file_content"] = content
-                    error_response["hint"] = f"File has {line_count} lines. Content included above — use it to correct your old_string."
-                else:
-                    error_response["hint"] = f"File has {line_count} lines (too large to include). Re-read the file to get the current content before retrying."
-            raise ValueError(json.dumps(error_response, indent=2))
 
-        if prep_result.original_content is not None:
-            current_file_path.write_text(prep_result.original_content, encoding='utf-8')
-        active_proposal_content = prep_result.new_content
-        if active_proposal_content is not None:
+        if edit_pairs:
+            # --- MULTI-EDIT MODE ---
+            p = validate_path(path)
+            if not p.exists():
+                if temp_dir.exists(): shutil.rmtree(temp_dir)
+                raise ValueError(f"File not found: {path}")
+            original_content = p.read_text(encoding='utf-8')
+            normalized = tool.normalize_line_endings(original_content)
+
+            for i, pair in enumerate(edit_pairs):
+                old_s = tool.normalize_line_endings(pair['old_string'])
+                new_s = pair['new_string']
+                if old_s:
+                    occurrences = tool.count_occurrences(normalized, old_s)
+                    if occurrences == 0:
+                        if temp_dir.exists(): shutil.rmtree(temp_dir)
+                        error_response = {
+                            "error": True,
+                            "error_type": "validation_error",
+                            "message": f"Edit {i}: No match found for 'old_string'.",
+                        }
+                        line_count = original_content.count('\n') + 1
+                        if line_count < 5000:
+                            error_response["file_content"] = original_content
+                            error_response["hint"] = f"File has {line_count} lines. Content included above — use it to correct your old_string for edit {i}."
+                        else:
+                            error_response["hint"] = f"File has {line_count} lines (too large to include). Re-read the file to get the current content before retrying."
+                        raise ValueError(json.dumps(error_response, indent=2))
+                    if occurrences != 1:
+                        if temp_dir.exists(): shutil.rmtree(temp_dir)
+                        error_response = {
+                            "error": True,
+                            "error_type": "validation_error",
+                            "message": f"Edit {i}: Expected 1 occurrence but found {occurrences}. Provide more context in old_string to ensure uniqueness.",
+                        }
+                        line_count = original_content.count('\n') + 1
+                        if line_count < 5000:
+                            error_response["file_content"] = original_content
+                            error_response["hint"] = f"File has {line_count} lines. Content included above — use it to correct your old_string for edit {i}."
+                        raise ValueError(json.dumps(error_response, indent=2))
+                    normalized = normalized.replace(old_s, new_s, 1)
+                else:
+                    # Empty old_string in a multi-edit means full rewrite (only valid as sole edit)
+                    if len(edit_pairs) > 1:
+                        if temp_dir.exists(): shutil.rmtree(temp_dir)
+                        raise ValueError("Edit with empty old_string (full rewrite) cannot be combined with other edits.")
+                    normalized = new_s
+
+            current_file_path.write_text(original_content, encoding='utf-8')
+            active_proposal_content = normalized
             future_file_path.write_text(active_proposal_content, encoding='utf-8')
+        else:
+            # --- SINGLE-EDIT MODE (original behavior) ---
+            prep_result = tool._prepare_edit(path, old_string, new_string, expected_replacements)
+            if not prep_result.success:
+                if temp_dir.exists(): shutil.rmtree(temp_dir)
+                error_response = {
+                    "error": True,
+                    "error_type": prep_result.error_type,
+                    "message": f"Edit preparation failed: {prep_result.message}",
+                }
+                if prep_result.error_type == "validation_error" and original_path_obj.exists():
+                    content = original_path_obj.read_text(encoding='utf-8')
+                    line_count = content.count('\n') + 1
+                    if line_count < 5000:
+                        error_response["file_content"] = content
+                        error_response["hint"] = f"File has {line_count} lines. Content included above — use it to correct your old_string."
+                    else:
+                        error_response["hint"] = f"File has {line_count} lines (too large to include). Re-read the file to get the current content before retrying."
+                raise ValueError(json.dumps(error_response, indent=2))
+
+            if prep_result.original_content is not None:
+                current_file_path.write_text(prep_result.original_content, encoding='utf-8')
+            active_proposal_content = prep_result.new_content
+            if active_proposal_content is not None:
+                future_file_path.write_text(active_proposal_content, encoding='utf-8')
 
     # --- Step 2: Display, Launch, and Wait for Human ---
     vscode_command = f'code --diff "{current_file_path}" "{future_file_path}"'

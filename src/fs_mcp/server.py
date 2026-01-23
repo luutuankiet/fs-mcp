@@ -517,7 +517,7 @@ APPROVAL_KEYWORD = "##APPROVE##"
 
 
 @mcp.tool()
-def propose_and_review(path: str, new_string: str, old_string: str = "", expected_replacements: int = 1, session_path: Optional[str] = None) -> str:
+def propose_and_review(path: str, new_string: str, old_string: str = "", expected_replacements: int = 1, session_path: Optional[str] = None, edits: Optional[list] = None) -> str:
     """
     Starts or continues an interactive review session using a VS Code diff view. This smart tool adapts its behavior based on the arguments provided.
 
@@ -527,17 +527,31 @@ def propose_and_review(path: str, new_string: str, old_string: str = "", expecte
     surrounding lines (1-2) to ensure uniqueness. This prevents context errors and
     improves performance on large files.
 
+    **BEST PRACTICE - BATCH MULTIPLE CHANGES:**
+    When you need to make multiple edits to the same file, use the `edits` parameter
+    to batch them into a single review call. Break down your changes into manageable
+    old_string/new_string pairs — each pair should be minimal (only the lines that change
+    plus 1-2 lines of context for uniqueness). This gives the user one combined diff to
+    review instead of multiple sequential approvals.
+
+    Example `edits` value (list of dicts):
+    [
+      {"old_string": "def foo():\n    return 1", "new_string": "def foo():\n    return 2"},
+      {"old_string": "x = 10", "new_string": "x = 20"}
+    ]
+
     Intents:
 
     1.  **Start New Review (Patch):** Provide `path`, `old_string`, `new_string`. Validates the patch against the original file.
-    2.  **Start New Review (Full Rewrite):** Provide `path`, `new_string`, and leave `old_string` empty.
-    3.  **Continue Review (Contextual Patch):** Provide `path`, `session_path`, `old_string`, and `new_string`.
+    2.  **Start New Review (Multi-Patch):** Provide `path` and `edits` (list of {old_string, new_string} dicts). All patches are applied sequentially and presented as one combined diff.
+    3.  **Start New Review (Full Rewrite):** Provide `path`, `new_string`, and leave `old_string` empty.
+    4.  **Continue Review (Contextual Patch):** Provide `path`, `session_path`, `old_string`, and `new_string`.
         *   **CRITICAL: STATE RECONSTRUCTION PROTOCOL**
             1.  **Analyze the Diff:** If `user_action` was 'REVIEW', the user has manually edited the file. The `user_feedback_diff` is the ABSOLUTE TRUTH.
             2.  **Reconstruct Current State:** You must mentally apply the `user_feedback_diff` to your previous `new_string` to calculate the current file content.
             3.  **Match Exactly:** Your `old_string` MUST match this reconstructed content character-for-character, *including* any comments or temporary notes the user typed (e.g., `# hey remove this`).
             4.  **Execute Instructions:** If the user wrote instructions in the code, your `new_string` must perform those edits (e.g., removing the comment, fixing the line). Do not ignore them to add new features. **always remove the identified user review comment from the new_string.**
-    4.  **Continue Review (Full Rewrite / Recovery):** Provide `path`, `session_path`, `new_string`, and the full content of the file as `old_string`.
+    5.  **Continue Review (Full Rewrite / Recovery):** Provide `path`, `session_path`, `new_string`, and the full content of the file as `old_string`.
 
     Note: `path` is always required to identify the file being edited, even when continuing a session.
 
@@ -550,7 +564,8 @@ def propose_and_review(path: str, new_string: str, old_string: str = "", expecte
         new_string,
         old_string,
         expected_replacements,
-        session_path
+        session_path,
+        edits
     )
 
 @mcp.tool()

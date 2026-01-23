@@ -77,7 +77,22 @@ def propose_and_review_logic(
         tool = RooStyleEditTool(validate_path)
         prep_result = tool._prepare_edit(path, old_string, new_string, expected_replacements)
         if not prep_result.success:
-            raise ValueError(f"Edit preparation failed: {prep_result.message} (Error type: {prep_result.error_type})")
+            error_response = {
+                "error": True,
+                "error_type": prep_result.error_type,
+                "message": f"Edit preparation failed: {prep_result.message}",
+            }
+            if prep_result.error_type == "validation_error":
+                p = Path(path)
+                if p.exists():
+                    content = p.read_text(encoding='utf-8')
+                    line_count = content.count('\n') + 1
+                    if line_count < 5000:
+                        error_response["file_content"] = content
+                        error_response["hint"] = f"File has {line_count} lines. Content included above — use it to correct your old_string."
+                    else:
+                        error_response["hint"] = f"File has {line_count} lines (too large to include). Re-read the file to get the current content before retrying."
+            raise ValueError(json.dumps(error_response, indent=2))
         
         if prep_result.new_content is not None:
             p = validate_path(path)
@@ -111,7 +126,18 @@ def propose_and_review_logic(
 
         if occurrences != 1:
             # SAFETY VALVE: The patch is ambiguous or invalid. Fail gracefully.
-            raise ValueError(f"Contextual patch failed. The provided 'old_string' anchor was found {occurrences} times in the user's last version, but expected exactly 1. Please provide the full file content as 'old_string' to recover.")
+            error_response = {
+                "error": True,
+                "error_type": "validation_error",
+                "message": f"Contextual patch failed. The provided 'old_string' anchor was found {occurrences} times in the user's last version, but expected exactly 1.",
+            }
+            line_count = staged_content.count('\n') + 1
+            if line_count < 5000:
+                error_response["file_content"] = staged_content
+                error_response["hint"] = f"Session file has {line_count} lines. Content included above — use it to correct your old_string."
+            else:
+                error_response["hint"] = f"Session file has {line_count} lines (too large to include). Re-read the file to get the current content before retrying."
+            raise ValueError(json.dumps(error_response, indent=2))
 
         # Patch successfully applied.
         active_proposal_content = staged_content.replace(old_string, new_string, 1)
@@ -127,7 +153,20 @@ def propose_and_review_logic(
         prep_result = tool._prepare_edit(path, old_string, new_string, expected_replacements)
         if not prep_result.success:
             if temp_dir.exists(): shutil.rmtree(temp_dir)
-            raise ValueError(f"Edit preparation failed: {prep_result.message} (Error type: {prep_result.error_type})")
+            error_response = {
+                "error": True,
+                "error_type": prep_result.error_type,
+                "message": f"Edit preparation failed: {prep_result.message}",
+            }
+            if prep_result.error_type == "validation_error" and original_path_obj.exists():
+                content = original_path_obj.read_text(encoding='utf-8')
+                line_count = content.count('\n') + 1
+                if line_count < 5000:
+                    error_response["file_content"] = content
+                    error_response["hint"] = f"File has {line_count} lines. Content included above — use it to correct your old_string."
+                else:
+                    error_response["hint"] = f"File has {line_count} lines (too large to include). Re-read the file to get the current content before retrying."
+            raise ValueError(json.dumps(error_response, indent=2))
 
         if prep_result.original_content is not None:
             current_file_path.write_text(prep_result.original_content, encoding='utf-8')

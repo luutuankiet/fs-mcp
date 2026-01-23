@@ -73,7 +73,7 @@ def propose_and_review_logic(
     session_path: Optional[str] = None
 ) -> str:
     # --- GSD-Lite Auto-Approve ---
-    if 'gsd_lite' in Path(path).parts:
+    if 'gsd-lite' in Path(path).parts:
         tool = RooStyleEditTool(validate_path)
         prep_result = tool._prepare_edit(path, old_string, new_string, expected_replacements)
         if not prep_result.success:

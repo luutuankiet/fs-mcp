@@ -25,7 +25,7 @@ import subprocess
 
 from dataclasses import dataclass
 from .edit_tool import EditResult, RooStyleEditTool, propose_and_review_logic
-from .utils import check_ripgrep
+from .utils import check_ripgrep, check_jq, check_yq
 
 
 # --- Global Configuration ---
@@ -34,11 +34,13 @@ ALLOWED_DIRS: List[Path] = []
 mcp = FastMCP("filesystem", stateless_http=True)
 IS_VSCODE_CLI_AVAILABLE = False
 IS_RIPGREP_AVAILABLE = False
+IS_JQ_AVAILABLE = False
+IS_YQ_AVAILABLE = False
 
 
 def initialize(directories: List[str]):
     """Initialize the allowed directories and check for VS Code CLI."""
-    global ALLOWED_DIRS, USER_ACCESSIBLE_DIRS, IS_VSCODE_CLI_AVAILABLE, IS_RIPGREP_AVAILABLE
+    global ALLOWED_DIRS, USER_ACCESSIBLE_DIRS, IS_VSCODE_CLI_AVAILABLE, IS_RIPGREP_AVAILABLE, IS_JQ_AVAILABLE, IS_YQ_AVAILABLE
     ALLOWED_DIRS.clear()
     USER_ACCESSIBLE_DIRS.clear()
     
@@ -46,6 +48,14 @@ def initialize(directories: List[str]):
     IS_RIPGREP_AVAILABLE, ripgrep_message = check_ripgrep()
     if not IS_RIPGREP_AVAILABLE:
         print(ripgrep_message)
+
+    IS_JQ_AVAILABLE, jq_message = check_jq()
+    if not IS_JQ_AVAILABLE:
+        print(jq_message)
+    
+    IS_YQ_AVAILABLE, yq_message = check_yq()
+    if not IS_YQ_AVAILABLE:
+        print(yq_message)
 
     raw_dirs = directories or [str(Path.cwd())]
     

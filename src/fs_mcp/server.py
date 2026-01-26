@@ -606,6 +606,23 @@ def grounding_search(query: str) -> str:
 def grep_content(pattern: str, search_path: str = '.', case_insensitive: bool = False, context_lines: int = 2) -> str:
     """
     Search for a pattern in file contents using ripgrep.
+
+    **Workflow:**
+    This tool is the first step in a two-step "grep -> read" workflow.
+
+    1.  **`grep_content`**: Use this tool with a specific pattern to find *which files* are relevant and *where* in those files the relevant code is (line numbers). Its primary purpose is to **locate file paths and line numbers**, not to read full file contents.
+    2.  **`read_files`**: Use the file path and line numbers from the output of this tool to perform a targeted read of only the relevant file sections.
+
+    **Example:**
+    ```
+    # Step 1: Find where 'FastMCP' is defined.
+    grep_content(pattern="class FastMCP")
+
+    # Output might be: File: src/fs_mcp/server.py, Line: 20
+
+    # Step 2: Read the relevant section of that file.
+    read_files([{"path": "src/fs_mcp/server.py", "start_line": 15, "end_line": 25}])
+    ```
     """
     if not IS_RIPGREP_AVAILABLE:
         _, msg = check_ripgrep()

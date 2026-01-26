@@ -9,25 +9,25 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Startup & Dependencies
 
-- [ ] **INIT-01**: Server checks for ripgrep (`rg`) availability at startup before accepting connections
-- [ ] **INIT-02**: Server displays platform-specific install command if ripgrep is missing (macOS: `brew install ripgrep`, Linux: `apt install ripgrep`, Windows: `choco install ripgrep`)
-- [ ] **INIT-03**: Server logs clear warning but continues running without grep tool if ripgrep unavailable
+- [x] **INIT-01**: Server checks for ripgrep (`rg`) availability at startup before accepting connections
+- [x] **INIT-02**: Server displays platform-specific install command if ripgrep is missing (macOS: `brew install ripgrep`, Linux: `apt install ripgrep`, Windows: `choco install ripgrep`)
+- [x] **INIT-03**: Server logs clear warning but continues running without grep tool if ripgrep unavailable
 
 ### Grep Tool (Core)
 
-- [ ] **GREP-01**: Agent can search file contents using regex patterns via ripgrep
-- [ ] **GREP-02**: Search results include file paths relative to allowed directory
-- [ ] **GREP-03**: Search results include line numbers for each match
-- [ ] **GREP-04**: Search results include configurable context lines before/after match (default: 2)
-- [ ] **GREP-05**: Search results are bounded to max 100 matches to prevent context overflow
-- [ ] **GREP-06**: Search respects `.gitignore` and excludes common build artifacts (`node_modules`, `.venv`, `__pycache__`)
-- [ ] **GREP-07**: Agent can perform case-insensitive search via optional parameter
+- [x] **GREP-01**: Agent can search file contents using regex patterns via ripgrep
+- [x] **GREP-02**: Search results include file paths relative to allowed directory
+- [x] **GREP-03**: Search results include line numbers for each match
+- [x] **GREP-04**: Search results include configurable context lines before/after match (default: 2)
+- [x] **GREP-05**: Search results are bounded to max 100 matches to prevent context overflow
+- [x] **GREP-06**: Search respects `.gitignore` and excludes common build artifacts (`node_modules`, `.venv`, `__pycache__`)
+- [x] **GREP-07**: Agent can perform case-insensitive search via optional parameter
 
 ### Grep Tool (Error Handling)
 
-- [ ] **GREP-08**: Tool returns helpful error message if ripgrep not found (with install instructions)
-- [ ] **GREP-09**: Tool handles ripgrep exit code 1 (no matches) gracefully — returns "No matches found" not error
-- [ ] **GREP-10**: Tool times out after 10 seconds to prevent runaway searches
+- [x] **GREP-08**: Tool returns helpful error message if ripgrep not found (with install instructions)
+- [x] **GREP-09**: Tool handles ripgrep exit code 1 (no matches) gracefully — returns "No matches found" not error
+- [x] **GREP-10**: Tool times out after 10 seconds to prevent runaway searches
 
 ### Tool Guidance
 
@@ -73,19 +73,19 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| INIT-01 | Phase 1 | Pending |
-| INIT-02 | Phase 1 | Pending |
-| INIT-03 | Phase 1 | Pending |
-| GREP-01 | Phase 1 | Pending |
-| GREP-02 | Phase 1 | Pending |
-| GREP-03 | Phase 1 | Pending |
-| GREP-04 | Phase 1 | Pending |
-| GREP-05 | Phase 1 | Pending |
-| GREP-06 | Phase 1 | Pending |
-| GREP-07 | Phase 1 | Pending |
-| GREP-08 | Phase 1 | Pending |
-| GREP-09 | Phase 1 | Pending |
-| GREP-10 | Phase 1 | Pending |
+| INIT-01 | Phase 1 | Complete |
+| INIT-02 | Phase 1 | Complete |
+| INIT-03 | Phase 1 | Complete |
+| GREP-01 | Phase 1 | Complete |
+| GREP-02 | Phase 1 | Complete |
+| GREP-03 | Phase 1 | Complete |
+| GREP-04 | Phase 1 | Complete |
+| GREP-05 | Phase 1 | Complete |
+| GREP-06 | Phase 1 | Complete |
+| GREP-07 | Phase 1 | Complete |
+| GREP-08 | Phase 1 | Complete |
+| GREP-09 | Phase 1 | Complete |
+| GREP-10 | Phase 1 | Complete |
 | GUID-01 | Phase 2 | Pending |
 | GUID-02 | Phase 2 | Pending |
 | GUID-03 | Phase 2 | Pending |

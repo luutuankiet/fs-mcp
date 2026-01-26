@@ -73,3 +73,15 @@ GPT-3.5, Gemini Flash, and similar models. They can handle structured output but
 
 ---
 *Last updated: 2026-01-26 after initialization*
+
+### Agent Workflows
+
+#### The Grep -> Read Pattern
+
+To explore the codebase efficiently, agents should use a two-step pattern:
+
+1.  **`grep_content` to locate**: Use `grep_content` with a regex pattern to find *where* relevant code exists. This returns a small, targeted list of file paths and line numbers.
+2.  **`read_files` to inspect**: Use the output from `grep_content` to read only the specific, relevant sections of files.
+
+This is vastly more token-efficient than listing and reading entire files, and provides higher quality context to the agent.
+

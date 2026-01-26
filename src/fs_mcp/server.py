@@ -149,6 +149,22 @@ def read_files(files: List[FileReadRequest]) -> str:
     Returns path and content separated by dashes.
     Prefer relative paths.
 
+    **Workflow Synergy with `grep_content`:**
+    This tool is the second step in the efficient "grep -> read" workflow. After using `grep_content`
+    to find relevant files and line numbers, use this tool to perform a targeted read of only
+    those specific sections. This is highly efficient for exploring large codebases.
+
+    **Example `grep -> read` workflow:**
+    ```
+    # Step 1: Find where 'FastMCP' is defined.
+    grep_content(pattern="class FastMCP")
+
+    # Output might be: File: src/fs_mcp/server.py, Line: 20
+
+    # Step 2: Read the relevant section of that file using start_line and end_line.
+    read_files([{"path": "src/fs_mcp/server.py", "start_line": 15, "end_line": 25}])
+    ```
+
     **LARGE FILE HANDLING:**
     If you encounter errors like "response too large", "token limit exceeded", or "context overflow":
     1. FIRST: Call `get_file_info(path)` to understand file dimensions (line count, token estimate, structure)

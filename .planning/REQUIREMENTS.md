@@ -73,29 +73,30 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| INIT-01 | — | Pending |
-| INIT-02 | — | Pending |
-| INIT-03 | — | Pending |
-| GREP-01 | — | Pending |
-| GREP-02 | — | Pending |
-| GREP-03 | — | Pending |
-| GREP-04 | — | Pending |
-| GREP-05 | — | Pending |
-| GREP-06 | — | Pending |
-| GREP-07 | — | Pending |
-| GREP-08 | — | Pending |
-| GREP-09 | — | Pending |
-| GREP-10 | — | Pending |
-| GUID-01 | — | Pending |
-| GUID-02 | — | Pending |
-| GUID-03 | — | Pending |
-| CLEN-01 | — | Pending |
+| INIT-01 | Phase 1 | Pending |
+| INIT-02 | Phase 1 | Pending |
+| INIT-03 | Phase 1 | Pending |
+| GREP-01 | Phase 1 | Pending |
+| GREP-02 | Phase 1 | Pending |
+| GREP-03 | Phase 1 | Pending |
+| GREP-04 | Phase 1 | Pending |
+| GREP-05 | Phase 1 | Pending |
+| GREP-06 | Phase 1 | Pending |
+| GREP-07 | Phase 1 | Pending |
+| GREP-08 | Phase 1 | Pending |
+| GREP-09 | Phase 1 | Pending |
+| GREP-10 | Phase 1 | Pending |
+| GUID-01 | Phase 2 | Pending |
+| GUID-02 | Phase 2 | Pending |
+| GUID-03 | Phase 2 | Pending |
+| CLEN-01 | Phase 3 | Pending |
 
 **Coverage:**
 - v1 requirements: 17 total
-- Mapped to phases: 0
-- Unmapped: 17 ⚠️ (awaiting roadmap)
+- Mapped to phases: 17 (100%)
+- Unmapped: 0
 
 ---
+
 *Requirements defined: 2026-01-26*
-*Last updated: 2026-01-26 after initial definition*
+*Last updated: 2026-01-26 after roadmap creation*

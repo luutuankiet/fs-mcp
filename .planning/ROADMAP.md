@@ -126,7 +126,7 @@ Add ripgrep-based content search to fs-mcp with automatic dependency detection, 
 | Phase | Status | Goal | Success Criteria Met | Notes |
 |-------|--------|------|---------------------|-------|
 | Phase 1 | Complete | Ripgrep integration, core grep tool | 5/5 | Foundation: startup detection, bounded search, error handling |
-| Phase 2 | Pending | Workflow optimization | 0/4 | Agent guidance: improved tool descriptions, weak agent validation |
+| Phase 2 | Complete | Workflow optimization | 4/4 | Agent guidance: improved tool descriptions, weak agent validation |
 | Phase 3 | Pending | Production polish | 0/4 | Cleanup: remove placeholder, documentation, observability |
 
 ---

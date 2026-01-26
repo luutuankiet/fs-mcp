@@ -31,9 +31,9 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Tool Guidance
 
-- [ ] **GUID-01**: Grep tool description explicitly recommends "grep → read" workflow pattern
-- [ ] **GUID-02**: read_files tool description references grep as discovery step for large codebases
-- [ ] **GUID-03**: search_files (glob) tool description clarifies it's for file names, grep is for file contents
+- [x] **GUID-01**: Grep tool description explicitly recommends "grep → read" workflow pattern
+- [x] **GUID-02**: read_files tool description references grep as discovery step for large codebases
+- [x] **GUID-03**: search_files (glob) tool description clarifies it's for file names, grep is for file contents
 
 ### Cleanup
 
@@ -86,9 +86,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | GREP-08 | Phase 1 | Complete |
 | GREP-09 | Phase 1 | Complete |
 | GREP-10 | Phase 1 | Complete |
-| GUID-01 | Phase 2 | Pending |
-| GUID-02 | Phase 2 | Pending |
-| GUID-03 | Phase 2 | Pending |
+| GUID-01 | Phase 2 | Complete |
+| GUID-02 | Phase 2 | Complete |
+| GUID-03 | Phase 2 | Complete |
 | CLEN-01 | Phase 3 | Pending |
 
 **Coverage:**

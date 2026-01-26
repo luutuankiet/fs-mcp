@@ -95,6 +95,32 @@ Add ripgrep-based content search to fs-mcp with automatic dependency detection, 
 
 ---
 
+### Phase 4: Add jq and yq for querying large json and yaml files
+
+**Goal:** Agents can efficiently query large JSON and YAML files without context overflow, completing the grep → read → query pattern.
+
+**Dependencies:** Phase 3
+
+**Plans:** 2 plans
+
+Plans:
+- [ ] 04-01-PLAN.md — Add jq/yq dependency detection with graceful degradation
+- [ ] 04-02-PLAN.md — Implement query_json, query_yaml tools and enhance read_files
+
+**Success Criteria:**
+
+1. Server detects jq and yq availability at startup; shows platform-specific install commands if missing; continues running with tools disabled (graceful degradation).
+
+2. Agent can call query_json(file_path, jq_expression, timeout=30) to query JSON files with compact output, bounded to 100 results, timeout protection.
+
+3. Agent can call query_yaml(file_path, yq_expression, timeout=30) to query YAML files with same bounded output and timeout protection.
+
+4. read_files detects large JSON/YAML files (>100k tokens) and blocks by default, suggesting query tools; allows override with large_file_passthrough=True.
+
+5. Tool docstrings include syntax examples and workflow guidance optimized for weak models (GPT-3.5, Gemini Flash).
+
+---
+
 ## Requirement Mapping
 
 | Requirement | Phase | Category |
@@ -128,6 +154,7 @@ Add ripgrep-based content search to fs-mcp with automatic dependency detection, 
 | Phase 1 | Complete | Ripgrep integration, core grep tool | 5/5 | Foundation: startup detection, bounded search, error handling |
 | Phase 2 | Complete | Workflow optimization | 4/4 | Agent guidance: improved tool descriptions, weak agent validation |
 | Phase 3 | Pending | Production polish | 0/4 | Cleanup: remove placeholder, documentation, observability |
+| Phase 4 | Pending | Add jq and yq for querying large json and yaml files | 0/5 | Structured data query tools with bounded output |
 
 ---
 

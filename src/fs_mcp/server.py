@@ -603,6 +603,69 @@ def grounding_search(query: str) -> str:
 
 
 @mcp.tool()
+def grep_content(pattern: str, search_path: str = '.', case_insensitive: bool = False, context_lines: int = 2) -> str:
+    """
+    Search for a pattern in file contents using ripgrep.
+    """
+    if not IS_RIPGREP_AVAILABLE:
+        _, msg = check_ripgrep()
+        return f"Error: ripgrep is not available. {msg}"
+
+    validated_path = validate_path(search_path)
+    
+    command = [
+        'rg',
+        '--json',
+        '--max-count=100',
+        f'--context={context_lines}',
+    ]
+    if case_insensitive:
+        command.append('--ignore-case')
+    
+    command.extend([pattern, str(validated_path)])
+
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False  # Don't raise exception for non-zero exit codes
+        )
+    except FileNotFoundError:
+        return "Error: 'rg' command not found. Please ensure ripgrep is installed and in your PATH."
+    except subprocess.TimeoutExpired:
+        return "Error: Search timed out after 10 seconds. Please try a more specific pattern."
+
+    if result.returncode != 0 and result.returncode != 1:
+        # ripgrep exits with 1 for no matches, which is not an error for us.
+        # Other non-zero exit codes indicate a real error.
+        return f"Error executing ripgrep: {result.stderr}"
+
+    output_lines = []
+    matches_found = False
+    for line in result.stdout.strip().split('\n'):
+        try:
+            message = json.loads(line)
+            if message['type'] == 'match':
+                matches_found = True
+                data = message['data']
+                path = data['path']['text']
+                line_number = data['line_number']
+                text = data['lines']['text']
+                output_lines.append(f"File: {path}, Line: {line_number}\n---\n{text.strip()}\n---")
+        except (json.JSONDecodeError, KeyError):
+            # Ignore non-match lines or lines with unexpected structure
+            continue
+
+    if not matches_found:
+        return "No matches found."
+
+    return "\n\n".join(output_lines)
+
+
+
+@mcp.tool()
 def append_text(path: str, content: str) -> str:
     """
     Append text to the end of a file. If the file does not exist, it will be created.

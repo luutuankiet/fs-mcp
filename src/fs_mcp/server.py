@@ -25,6 +25,7 @@ import subprocess
 
 from dataclasses import dataclass
 from .edit_tool import EditResult, RooStyleEditTool, propose_and_review_logic
+from .utils import check_ripgrep
 
 
 # --- Global Configuration ---
@@ -32,15 +33,19 @@ USER_ACCESSIBLE_DIRS: List[Path] = []
 ALLOWED_DIRS: List[Path] = []
 mcp = FastMCP("filesystem", stateless_http=True)
 IS_VSCODE_CLI_AVAILABLE = False
+IS_RIPGREP_AVAILABLE = False
 
 
 def initialize(directories: List[str]):
     """Initialize the allowed directories and check for VS Code CLI."""
-    global ALLOWED_DIRS, USER_ACCESSIBLE_DIRS, IS_VSCODE_CLI_AVAILABLE
+    global ALLOWED_DIRS, USER_ACCESSIBLE_DIRS, IS_VSCODE_CLI_AVAILABLE, IS_RIPGREP_AVAILABLE
     ALLOWED_DIRS.clear()
     USER_ACCESSIBLE_DIRS.clear()
     
     IS_VSCODE_CLI_AVAILABLE = shutil.which('code') is not None
+    IS_RIPGREP_AVAILABLE, ripgrep_message = check_ripgrep()
+    if not IS_RIPGREP_AVAILABLE:
+        print(ripgrep_message)
 
     raw_dirs = directories or [str(Path.cwd())]
     
@@ -143,6 +148,22 @@ def read_files(files: List[FileReadRequest]) -> str:
     Read the contents of multiple files simultaneously.
     Returns path and content separated by dashes.
     Prefer relative paths.
+
+    **Workflow Synergy with `grep_content`:**
+    This tool is the second step in the efficient "grep -> read" workflow. After using `grep_content`
+    to find relevant files and line numbers, use this tool to perform a targeted read of only
+    those specific sections. This is highly efficient for exploring large codebases.
+
+    **Example `grep -> read` workflow:**
+    ```
+    # Step 1: Find where 'FastMCP' is defined.
+    grep_content(pattern="class FastMCP")
+
+    # Output might be: File: src/fs_mcp/server.py, Line: 20
+
+    # Step 2: Read the relevant section of that file using start_line and end_line.
+    read_files([{"path": "src/fs_mcp/server.py", "start_line": 15, "end_line": 25}])
+    ```
 
     **LARGE FILE HANDLING:**
     If you encounter errors like "response too large", "token limit exceeded", or "context overflow":
@@ -595,6 +616,86 @@ def grounding_search(query: str) -> str:
     # This is a placeholder for a future RAG or other search implementation.
     print(f"Received grounding search query: {query}")
     return "DEVELOPER PLEASE UPDATE THIS WITH ACTUAL CONTENT"
+
+
+@mcp.tool()
+def grep_content(pattern: str, search_path: str = '.', case_insensitive: bool = False, context_lines: int = 2) -> str:
+    """
+    Search for a pattern in file contents using ripgrep.
+
+    **Workflow:**
+    This tool is the first step in a two-step "grep -> read" workflow.
+
+    1.  **`grep_content`**: Use this tool with a specific pattern to find *which files* are relevant and *where* in those files the relevant code is (line numbers). Its primary purpose is to **locate file paths and line numbers**, not to read full file contents.
+    2.  **`read_files`**: Use the file path and line numbers from the output of this tool to perform a targeted read of only the relevant file sections.
+
+    **Example:**
+    ```
+    # Step 1: Find where 'FastMCP' is defined.
+    grep_content(pattern="class FastMCP")
+
+    # Output might be: File: src/fs_mcp/server.py, Line: 20
+
+    # Step 2: Read the relevant section of that file.
+    read_files([{"path": "src/fs_mcp/server.py", "start_line": 15, "end_line": 25}])
+    ```
+    """
+    if not IS_RIPGREP_AVAILABLE:
+        _, msg = check_ripgrep()
+        return f"Error: ripgrep is not available. {msg}"
+
+    validated_path = validate_path(search_path)
+    
+    command = [
+        'rg',
+        '--json',
+        '--max-count=100',
+        f'--context={context_lines}',
+    ]
+    if case_insensitive:
+        command.append('--ignore-case')
+    
+    command.extend([pattern, str(validated_path)])
+
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False  # Don't raise exception for non-zero exit codes
+        )
+    except FileNotFoundError:
+        return "Error: 'rg' command not found. Please ensure ripgrep is installed and in your PATH."
+    except subprocess.TimeoutExpired:
+        return "Error: Search timed out after 10 seconds. Please try a more specific pattern."
+
+    if result.returncode != 0 and result.returncode != 1:
+        # ripgrep exits with 1 for no matches, which is not an error for us.
+        # Other non-zero exit codes indicate a real error.
+        return f"Error executing ripgrep: {result.stderr}"
+
+    output_lines = []
+    matches_found = False
+    for line in result.stdout.strip().split('\n'):
+        try:
+            message = json.loads(line)
+            if message['type'] == 'match':
+                matches_found = True
+                data = message['data']
+                path = data['path']['text']
+                line_number = data['line_number']
+                text = data['lines']['text']
+                output_lines.append(f"File: {path}, Line: {line_number}\n---\n{text.strip()}\n---")
+        except (json.JSONDecodeError, KeyError):
+            # Ignore non-match lines or lines with unexpected structure
+            continue
+
+    if not matches_found:
+        return "No matches found."
+
+    return "\n\n".join(output_lines)
+
 
 
 @mcp.tool()

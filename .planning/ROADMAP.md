@@ -36,6 +36,9 @@ Add ripgrep-based content search to fs-mcp with automatic dependency detection, 
 
 **Success Criteria:**
 
+**Plans:** 1 plan
+- [ ] 01-1-PLAN.md — Implement Ripgrep dependency check and core `grep_content` tool.
+
 1. Server starts with ripgrep availability check; displays platform-specific install command (brew/apt/dnf/choco) if missing, logs warning, continues serving with grep tool disabled.
 
 2. Agent can call grep_content(pattern, search_path, case_insensitive=False, context_lines=2) and receives bounded results with file paths, line numbers, matched text, and context.

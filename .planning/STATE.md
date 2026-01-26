@@ -12,31 +12,29 @@
 One-command remote agent access. `uvx fs-mcp` on any server → agents can read, write, and explore the codebase immediately. No SSH tunnels, no environment setup.
 
 **Current Focus:**
-Add ripgrep-based content search to complete the grep → read pattern for efficient remote codebase exploration.
+Add jq and yq for querying large json and yaml files.
 
 **Why Now:**
-Agents exploring unfamiliar codebases burn context tokens. The grep → read workflow is 80% more token-efficient than full file reads, but requires a grep tool that doesn't exist yet.
+Agents exploring large structured files that would overflow agent context windows. The grep → query pattern is more token-efficient.
 
 **Success Metric:**
-Complete grep tool implementation with bounded output, agent workflow guidance, and production-ready polish.
+Complete query tool implementation with bounded output, agent workflow guidance, and production-ready polish.
 
 ---
 
 ## Current Position
 
-**Milestone Status:** Phase 3 Complete
+**Milestone Status:** Phase 4 in progress
 
-**Active Phase:** Phase 3: Plan Phase Orchestrator
+**Active Phase:** Phase 4: Add jq and yq for querying large json and yaml files
 
 **Progress:**
-- Phase 3 planning complete.
-- Next step: Execute Phase 3.
+- Phase 4, plan 1 complete.
+- Next step: Execute Plan 2 of Phase 4.
 
 **Progress Bar:**
 ```
-[██████████████████████████████████████] 100% (Phase 3 planning complete)
-```
-[██████████████████████████████████████] 100% (Phase 3 planning complete)
+[█████████░] 83% (5/6 plans complete)
 ```
 
 ---
@@ -44,10 +42,11 @@ Complete grep tool implementation with bounded output, agent workflow guidance, 
 ## Key Artifacts
 
 **ROADMAP.md**
-- 3 phases derived from requirements
+- 4 phases derived from requirements
 - Phase 1: Ripgrep Integration & Core Grep Tool (13 requirements) - **Complete**
 - Phase 2: Agent Workflow Optimization (3 requirements) - **Complete**
-- Phase 3: Production Polish & Cleanup (1 requirement)
+- Phase 3: Production Polish & Cleanup (1 requirement) - **Complete**
+- Phase 4: Add jq and yq for querying large json and yaml files - **In Progress**
 - 100% requirement coverage
 
 **REQUIREMENTS.md**
@@ -68,6 +67,8 @@ Complete grep tool implementation with bounded output, agent workflow guidance, 
 5. **Graceful Degradation:** Server continues running if ripgrep missing; grep tool disabled with helpful warning message.
 6. **Explicit Agent Guidance:** Explicitly guide agents via tool descriptions rather than relying on emergent behavior.
 7. **Agent Simulation:** Simulated planner and checker agents during orchestration tasks where an executor agent cannot spawn other agents.
+8. **Follow ripgrep pattern for jq/yq:** To maintain consistency for checking external CLI dependencies.
+9. **Use a virtual environment for dependencies:** To resolve dependency conflicts and isolate the project environment.
 
 ### Implementation Notes
 
@@ -91,17 +92,21 @@ Complete grep tool implementation with bounded output, agent workflow guidance, 
 
 ### Known Blockers
 
-None currently. Phase 3 can begin.
+None currently.
+
+### Roadmap Evolution
+
+- Phase 4 added: Add jq and yq for querying large json and yaml files
 
 ---
 
 ## Session Continuity
 
-**Last Activity:** 2026-01-26 - Phase 3, Plan 2 execution complete
+**Last Activity:** 2026-01-27 - Phase 4, Plan 1 execution complete
 
 **What's Next:**
-Execute Phase 3: `/gsd-execute-phase 3`
+Execute Plan 2 of Phase 4.
 
 ---
 
-**Last Updated:** 2026-01-26 (after 02-01 plan execution)
+**Last Updated:** 2026-01-27 (after 04-01 plan execution)

@@ -157,7 +157,7 @@ This urgent insertion addresses limitations discovered during Phase 4 execution.
 **Plans:** 2 plans
 
 Plans:
-- [ ] 05-1-PLAN.md — Enhance read_files for section-aware reading.
+- [x] 05-1-PLAN.md — Enhance read_files for section-aware reading.
 - [ ] 05-2-PLAN.md — Enhance grep_content with section end hints.
 
 **Details:**

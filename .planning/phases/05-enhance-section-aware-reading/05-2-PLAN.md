@@ -17,22 +17,23 @@ must_haves:
     - "An agent can disable the hint generation by passing an empty list."
   artifacts:
     - path: "src/fs_mcp/server.py"
-      provides: "An enhanced grep_content function that can provide section end hints."
+      provides: "Enhanced grep_content function with section end hinting"
       contains:
-        - "def grep_content(pattern: str, search_path: str = '.', case_insensitive: bool = False, context_lines: int = 2, section_patterns: Optional[List[str]] = None) -> str:"
-        - "section_end_hint"
+        - "def grep_content("
+        - "section_patterns: Optional[List[str]] = None"
+        - "section end hint:"
   key_links:
-    - from: "Primary `ripgrep` result processing loop"
-      to: "Secondary file scan logic for hint generation"
-      via: "A nested loop or function call for each grep match"
-      pattern: "for message in result.stdout.strip().split('\\n'):"
+    - from: "grep_content result processing loop"
+      to: "file content scanning logic"
+      via: "nested file read after a match is found"
+      pattern: "with open(result_file_path, 'r', encoding='utf-8') as f:"
 ---
 
 <objective>
-Close the verification gaps from the previous execution by implementing the `section_end_hint` feature in the `grep_content` tool. This involves modifying the function signature, adding logic to scan for section boundaries, and updating the output format and documentation.
+Close the gaps identified in the Phase 5 verification report by re-implementing the `section_end_hint` feature in the `grep_content` tool. The previous implementation was lost or reverted, breaking the "grep -> read section" workflow.
 
-Purpose: To complete the "grep → read section" workflow, enabling agents to efficiently read logical blocks of code identified by `grep_content`.
-Output: An updated `src/fs_mcp/server.py` with a fully functional `grep_content` tool that includes section end hints.
+**Purpose:** To restore the intended functionality of Phase 5, Plan 2, enabling agents to intelligently read logical blocks of code.
+**Output:** An updated `src/fs_mcp/server.py` with a fully functional `grep_content` that provides section end hints.
 </objective>
 
 <execution_context>
@@ -44,90 +45,65 @@ Output: An updated `src/fs_mcp/server.py` with a fully functional `grep_content`
 @.planning/PROJECT.md
 @.planning/ROADMAP.md
 @.planning/STATE.md
-@.planning/phases/05-enhance-section-aware-reading/05-CONTEXT.md
-@.planning/phases/05-enhance-section-aware-reading/05-1-SUMMARY.md
 @src/fs_mcp/server.py
 </context>
 
 <tasks>
 
 <task type="auto">
-  <name>Task 1: Implement `section_end_hint` feature in `grep_content`</name>
+  <name>Task 1: Re-implement Section End Hinting in `grep_content`</name>
   <files>
-    - src/fs_mcp/server.py
+    src/fs_mcp/server.py
   </files>
   <action>
-    This is a single, comprehensive task to fully implement the `section_end_hint` feature, addressing all previous gaps.
+    The goal is to modify the `grep_content` function to add a `section_end_hint` to each match. This will close the four gaps identified in the verification report.
 
-    **1. Update Function Signature:**
-    Locate the `grep_content` function definition and modify its signature to accept the new optional parameter.
-    *   **From:** `def grep_content(pattern: str, search_path: str = '.', case_insensitive: bool = False, context_lines: int = 2) -> str:`
-    *   **To:** `def grep_content(pattern: str, search_path: str = '.', case_insensitive: bool = False, context_lines: int = 2, section_patterns: Optional[List[str]] = None) -> str:`
+    1.  **Update Function Signature:** Modify the `grep_content` function signature to accept a new optional parameter: `section_patterns: Optional[List[str]] = None`.
 
-    **2. Implement Hint Generation Logic:**
-    Inside the `grep_content` function, after the subprocess call and before returning the results, you will process the matches to add hints.
+    2.  **Implement Hint Generation Logic:**
+        - Inside `grep_content`, after the initial `ripgrep` subprocess call and inside the loop that processes results, add the logic to find section ends.
+        - **Default Patterns:** If `section_patterns` is `None`, use a default list of patterns suitable for Python, such as `[r'^\s*def ', r'^\s*class ']`.
+        - **Disable Hinting:** If `section_patterns` is an empty list `[]`, skip the entire hint generation process for that call.
+        - **Custom Patterns:** If `section_patterns` is a list of strings, use those as the regex patterns.
+        - **Scanning Logic:** For each match from `ripgrep`:
+            - Open the file corresponding to the match.
+            - Seek to the line *after* the matched line number.
+            - Read the rest of the file line by line.
+            - For each subsequent line, check if it matches any of the active section end patterns.
+            - The first line that matches a pattern is the end of the section. Record its line number.
+            - If no pattern is matched by the end of the file, the hint should be `EOF`.
+        - **Error Handling:** Wrap the hint generation logic in a `try...except` block to ensure that any failures (e.g., file read errors, bad regex) do not crash the `grep_content` tool. If an error occurs, simply don't add a hint.
 
-    *   Collect the initial matches from ripgrep's JSON output into a list of dictionaries. Each dictionary should contain the path, line number, and text.
-    *   Define the default patterns: `DEFAULT_SECTION_PATTERNS = [r"^## ", r"^# ", r"^\[LOG-", r"^def ", r"^class "]`
-    *   Iterate through your list of collected matches. For each match:
-        *   Determine which patterns to use:
-            *   If `section_patterns` is `None`, use `DEFAULT_SECTION_PATTERNS`.
-            *   If `section_patterns` is `[]` (an empty list), skip hint generation for this match.
-            *   Otherwise, use the agent-provided `section_patterns`.
-        *   If hint generation is enabled, open the file for the current match.
-        *   Use `itertools.islice(f, match['line_number'], None)` to efficiently start scanning from the line *after* the match.
-        *   Loop through the subsequent lines, using `re.search()` to check against each pattern.
-        *   The first time a line matches a pattern, store its line number (match line number + lines scanned) as the `section_end_hint` and break the inner loop.
-        *   Add the found hint (or `None`) to the match's dictionary.
+    3.  **Update Output Format:**
+        - Append the hint to the end of the result string for each match.
+        - The format should be ` (section end hint: L<line_number>)` or ` (section end hint: EOF)`.
+        - Example: `123:    def my_function(): (section end hint: L145)`
 
-    **3. Update Output Formatting:**
-    Modify the final loop that builds the output string.
-    *   For each processed match, check if it has a `section_end_hint`.
-    *   If a hint exists, append it to the output string for that match. Example: `File: {path}, Line: {line_number}, section_end_hint: {hint_line_number}\\n---\\n{text}\\n---`
-    *   If no hint exists, format the output as before.
-
-    **4. Update Docstring:**
-    Modify the docstring of `grep_content` to document the new functionality.
-    *   Add `section_patterns: Optional[List[str]] = None` to the arguments section.
-    *   Explain what the parameter does and its three modes of operation (default `None`, disabled `[]`, custom list).
-    *   Explain what the `section_end_hint` in the output represents.
-    *   Add a new example to the docstring showing how to use `section_patterns`.
-
+    Reference the existing implementation of `read_files` for patterns on how to read files line-by-line efficiently.
   </action>
   <verify>
-    1. Create a temporary file `test_sections.md` with content like:
-    ```markdown
-    # Section 1
-    Some content to find.
-
-    ## Section 1.1
-    More content here.
-
-    # Section 2
-    Another thing to find.
-    ```
-    2. Call `grep_content` with `pattern="content to find"` on `test_sections.md`. The output should include `section_end_hint: 4`.
-    3. Call `grep_content` with `pattern="Another thing"` on `test_sections.md`. The output should not have a hint, as it's the last section.
-    4. Call `grep_content` with the same pattern but `section_patterns=[]`. The output should NOT include a `section_end_hint`.
-    5. Call `grep_content` with `pattern="More content here"` and `section_patterns=["^# "]`. The output should include `section_end_hint: 7`.
+    After modification, run `grep "section end hint" src/fs_mcp/server.py`. The command should find the new implementation details within the `grep_content` function. The core logic for pattern matching and file scanning should be present.
   </verify>
   <done>
-    All gaps identified in the verification report are closed. The `grep_content` tool now correctly generates and displays `section_end_hint`s based on default, custom, or disabled patterns, and its documentation is updated.
+    - The `grep_content` function in `src/fs_mcp/server.py` is updated with the `section_patterns` parameter.
+    - The function correctly generates and appends `section_end_hint` to its output.
+    - The feature works with default patterns, custom patterns, and can be disabled with an empty list.
+    - All four failed truths from the verification report are now addressed.
   </done>
 </task>
 
 </tasks>
 
 <verification>
-- The `grep_content` tool includes a `section_end_hint` in its output when appropriate.
-- The hint generation correctly uses the default patterns when `section_patterns` is not provided.
-- The hint generation correctly uses custom patterns when provided.
-- The hint generation is correctly disabled when `section_patterns` is an empty list.
-- The tool's docstring in the OpenAPI docs (`/docs`) is updated and accurate.
+The successful completion of this plan will be verified by re-running the checks that previously failed:
+1.  Calling `grep_content` without custom patterns adds a default hint (e.g., the start of the next function).
+2.  Calling `grep_content` with a custom pattern list uses those patterns for hinting.
+3.  Calling `grep_content` with `section_patterns=[]` produces no hints.
+4.  The "grep -> read section" workflow is now fully functional.
 </verification>
 
 <success_criteria>
-The "grep -> read section" workflow is now fully enabled and discoverable by agent developers, closing all gaps from the previous verification failure.
+All gaps from the Phase 5 verification report are closed. The `grep_content` tool is now fully integrated with the section-aware reading capabilities of `read_files`, making the agent's codebase exploration workflow significantly more efficient. The project is ready to proceed to the next phase or be considered complete.
 </success_criteria>
 
 <output>

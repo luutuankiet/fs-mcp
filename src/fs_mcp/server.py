@@ -162,43 +162,40 @@ def read_files(files: List[FileReadRequest], large_file_passthrough: bool = Fals
     Returns path and content separated by dashes.
     Prefer relative paths.
 
+    **Reading Modes:**
+    1.  **Full File:** Provide just the `path`.
+    2.  **Head/Tail:** Use `head` or `tail` to read the beginning or end of a file.
+    3.  **Line Range:** Use `start_line` and `end_line` to read a specific slice.
+    4.  **Section-Aware (New):** Use `start_line` and `read_to_next_pattern` to read from a starting point until a regex pattern is found. This is useful for reading entire functions or classes without knowing the exact end line.
+
+    **Section-Aware Reading Example:**
+    To read a Python function definition:
+    ```
+    read_files([{
+        "path": "src/fs_mcp/server.py",
+        "start_line": 90, 
+        "read_to_next_pattern": "^def "
+    }])
+    ```
+    This reads from line 90 until the *next* line that starts with "def ", effectively capturing the whole function. The pattern search starts on the line *after* `start_line`. If the pattern is not found, it reads to the end of the file.
+
+    **Parameter mutual exclusivity:**
+    - `head`/`tail` cannot be mixed with `start_line`/`end_line`.
+    - `end_line` cannot be used with `read_to_next_pattern`.
+
     **Workflow Synergy with `grep_content`:**
     This tool is the second step in the efficient "grep -> read" workflow. After using `grep_content`
     to find relevant files and line numbers, use this tool to perform a targeted read of only
-    those specific sections. This is highly efficient for exploring large codebases.
-
-    **Example `grep -> read` workflow:**
-    ```
-    # Step 1: Find where 'FastMCP' is defined.
-    grep_content(pattern="class FastMCP")
-
-    # Output might be: File: src/fs_mcp/server.py, Line: 20
-
-    # Step 2: Read the relevant section of that file using start_line and end_line.
-    read_files([{"path": "src/fs_mcp/server.py", "start_line": 15, "end_line": 25}])
-    ```
-
-    **LARGE FILE HANDLING:**
-    If you encounter errors like "response too large", "token limit exceeded", or "context overflow":
-    1. FIRST: Call `get_file_info(path)` to understand file dimensions (line count, token estimate, structure)
-    2. THEN: Use the `head` or `tail` parameters to read in manageable chunks
-    3. STRATEGY: Start with a small sample (e.g., head=50), then read iteratively based on the 
-       recommended chunk size from `get_file_info`
+    those specific sections.
     
-    **Example - Reading a large JSON file:**
-    ```
-    # Step 1: Get file info
-    get_file_info("manifest_slim.json")
-    # Returns: "... Total Lines: 15000, Estimated Tokens: 300000, Recommended chunk: 500 lines ..."
-    
-    # Step 2: Read first chunk
-    read_files([{"path": "manifest_slim.json", "head": 500}])
-    
-    # Step 3: Continue reading in chunks (lines 500-1000, 1000-1500, etc.)
-    # Note: To skip to a specific section, calculate offset based on line numbers
-    ```
     Args:
-        files: A list of file read requests.
+        files: A list of file read requests, each a dictionary that can contain:
+            path (str): The path to the file.
+            head (int, optional): The number of lines to read from the beginning.
+            tail (int, optional): The number of lines to read from the end.
+            start_line (int, optional): The 1-based line number to start reading from.
+            end_line (int, optional): The 1-based line number to stop reading at (inclusive).
+            read_to_next_pattern (str, optional): A regex pattern. Reads from `start_line` until a line matching the pattern is found (exclusive). Requires `start_line`.
         large_file_passthrough: If False (default), blocks reading JSON/YAML files >100k tokens and suggests using query_json/query_yaml instead. Set to True to read anyway.
     """
     results = []

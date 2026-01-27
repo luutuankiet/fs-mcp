@@ -776,6 +776,73 @@ def query_json(file_path: str, jq_expression: str, timeout: int = 30) -> str:
     return output
 
 
+
+@mcp.tool()
+def query_yaml(file_path: str, yq_expression: str, timeout: int = 30) -> str:
+    """
+    Query a YAML file using yq expressions (mikefarah/yq with jq-like syntax). Use this to efficiently explore large YAML files without reading the entire content into memory.
+
+    **Common Query Patterns:**
+    - Get specific field: '.field_name'
+    - Array iteration: '.items[]'
+    - Filter array: '.items[] | select(.active == true)'
+    - Select fields: '.items[] | {name, id}'
+    - Array slice: '.items[0:100]' (first 100 items)
+    - Count items: '.items | length'
+
+    **Workflow Example:**
+    1. Get structure overview: query_yaml("config.yaml", "keys")
+    2. Count array items: query_yaml("config.yaml", ".services | length")
+    3. Explore first few: query_yaml("config.yaml", ".services[0:5]")
+    4. Filter specific: query_yaml("config.yaml", ".services[] | select(.enabled == true)")
+
+    **Result Limit:** Returns first 100 results. For more, use slicing: .items[100:200]
+
+    Args:
+        file_path: Path to YAML file (relative or absolute)
+        yq_expression: yq query expression (jq-like syntax, see mikefarah.gitbook.io/yq)
+        timeout: Query timeout in seconds (default: 30)
+
+    Returns:
+        Compact JSON results (one per line), or error message
+    """
+    if not IS_YQ_AVAILABLE:
+        _, msg = check_yq()
+        return f"Error: yq is not available. {msg}"
+
+    validated_path = validate_path(file_path)
+    
+    command = ['yq', '-o=json', '-I=0', yq_expression, str(validated_path)]
+    
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False
+        )
+    except FileNotFoundError:
+        return "Error: 'yq' command not found. Please ensure yq is installed and in your PATH."
+    except subprocess.TimeoutExpired:
+        return f"Error: Query timed out after {timeout} seconds. Please simplify your query."
+    
+    if result.returncode != 0:
+        return f"Query error: {result.stderr.strip()}"
+    
+    output = result.stdout.strip()
+    if not output or output == 'null':
+        return "No results found."
+        
+    lines = output.split('\n')
+    
+    if len(lines) > 100:
+        truncated_output = "\n".join(lines[:100])
+        return f"{truncated_output}\n\n--- Truncated. Showing 100 of {len(lines)} results. ---\nRefine your query or use yq slicing: .items[100:200]"
+    
+    return output
+
+
 @mcp.tool()
 def append_text(path: str, content: str) -> str:
     """

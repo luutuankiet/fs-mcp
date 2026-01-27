@@ -737,7 +737,7 @@ def query_json(file_path: str, jq_expression: str, timeout: int = 30) -> str:
     """
     Query a JSON file using jq expressions. Use this to efficiently explore large JSON files
     without reading the entire content into memory.
-    
+
     **Common Query Patterns:**
     - Get specific field: '.field_name'
     - Array iteration: '.items[]'
@@ -745,20 +745,26 @@ def query_json(file_path: str, jq_expression: str, timeout: int = 30) -> str:
     - Select fields: '.items[] | {name, id}'
     - Array slice: '.items[0:100]' (first 100 items)
     - Count items: '.items | length'
-    
+
+    **Multiline Queries (with comments):**
+    query_json("data.json", '''
+    # Filter active items
+    .items[] | select(.active == true)
+    ''')
+
     **Workflow Example:**
     1. Get structure overview: query_json("data.json", "keys")
     2. Count array items: query_json("data.json", ".items | length")
     3. Explore first few: query_json("data.json", ".items[0:5]")
     4. Filter specific: query_json("data.json", ".items[] | select(.status == 'active')")
-    
+
     **Result Limit:** Returns first 100 results. For more, use slicing: .items[100:200]
-    
+
     Args:
         file_path: Path to JSON file (relative or absolute)
         jq_expression: jq query expression (see https://jqlang.github.io/jq/manual/)
         timeout: Query timeout in seconds (default: 30)
-    
+
     Returns:
         Compact JSON results (one per line), or error message
     """
@@ -767,36 +773,51 @@ def query_json(file_path: str, jq_expression: str, timeout: int = 30) -> str:
         return f"Error: jq is not available. {msg}"
 
     validated_path = validate_path(file_path)
-    
-    command = ['jq', '-c', jq_expression, str(validated_path)]
-    
+
+    # Create temp file for query expression to avoid command-line escaping issues
+    temp_file = None
     try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False
-        )
-    except FileNotFoundError:
-        return "Error: 'jq' command not found. Please ensure jq is installed and in your PATH."
-    except subprocess.TimeoutExpired:
-        return f"Error: Query timed out after {timeout} seconds. Please simplify your query."
-    
-    if result.returncode != 0:
-        return f"Query error: {result.stderr.strip()}"
-    
-    output = result.stdout.strip()
-    if not output or output == 'null':
-        return "No results found."
-        
-    lines = output.split('\n')
-    
-    if len(lines) > 100:
-        truncated_output = "\n".join(lines[:100])
-        return f"{truncated_output}\n\n--- Truncated. Showing 100 of {len(lines)} results. ---\nRefine your query or use jq slicing: .items[100:200]"
-    
-    return output
+        temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.jq', delete=False)
+        temp_file.write(jq_expression)
+        temp_file.close()
+
+        command = ['jq', '-c', '-f', temp_file.name, str(validated_path)]
+
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False
+            )
+        except FileNotFoundError:
+            return "Error: 'jq' command not found. Please ensure jq is installed and in your PATH."
+        except subprocess.TimeoutExpired:
+            return f"Error: Query timed out after {timeout} seconds. Please simplify your query."
+
+        if result.returncode != 0:
+            error_msg = result.stderr.strip()
+            return f"jq syntax error: {error_msg}. Check your query for common issues (unclosed brackets, missing semicolons, undefined functions)."
+
+        output = result.stdout.strip()
+        if not output or output == 'null':
+            return "No results found."
+
+        lines = output.split('\n')
+
+        if len(lines) > 100:
+            truncated_output = "\n".join(lines[:100])
+            return f"{truncated_output}\n\n--- Truncated. Showing 100 of {len(lines)} results. ---\nRefine your query or use jq slicing: .items[100:200]"
+
+        return output
+    finally:
+        # Clean up temp file
+        if temp_file is not None:
+            try:
+                os.unlink(temp_file.name)
+            except Exception:
+                pass
 
 
 

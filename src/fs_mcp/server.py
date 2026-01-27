@@ -708,6 +708,74 @@ def grep_content(pattern: str, search_path: str = '.', case_insensitive: bool = 
 
 
 
+
+@mcp.tool()
+def query_json(file_path: str, jq_expression: str, timeout: int = 30) -> str:
+    """
+    Query a JSON file using jq expressions. Use this to efficiently explore large JSON files
+    without reading the entire content into memory.
+    
+    **Common Query Patterns:**
+    - Get specific field: '.field_name'
+    - Array iteration: '.items[]'
+    - Filter array: '.items[] | select(.active == true)'
+    - Select fields: '.items[] | {name, id}'
+    - Array slice: '.items[0:100]' (first 100 items)
+    - Count items: '.items | length'
+    
+    **Workflow Example:**
+    1. Get structure overview: query_json("data.json", "keys")
+    2. Count array items: query_json("data.json", ".items | length")
+    3. Explore first few: query_json("data.json", ".items[0:5]")
+    4. Filter specific: query_json("data.json", ".items[] | select(.status == 'active')")
+    
+    **Result Limit:** Returns first 100 results. For more, use slicing: .items[100:200]
+    
+    Args:
+        file_path: Path to JSON file (relative or absolute)
+        jq_expression: jq query expression (see https://jqlang.github.io/jq/manual/)
+        timeout: Query timeout in seconds (default: 30)
+    
+    Returns:
+        Compact JSON results (one per line), or error message
+    """
+    if not IS_JQ_AVAILABLE:
+        _, msg = check_jq()
+        return f"Error: jq is not available. {msg}"
+
+    validated_path = validate_path(file_path)
+    
+    command = ['jq', '-c', jq_expression, str(validated_path)]
+    
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False
+        )
+    except FileNotFoundError:
+        return "Error: 'jq' command not found. Please ensure jq is installed and in your PATH."
+    except subprocess.TimeoutExpired:
+        return f"Error: Query timed out after {timeout} seconds. Please simplify your query."
+    
+    if result.returncode != 0:
+        return f"Query error: {result.stderr.strip()}"
+    
+    output = result.stdout.strip()
+    if not output or output == 'null':
+        return "No results found."
+        
+    lines = output.split('\n')
+    
+    if len(lines) > 100:
+        truncated_output = "\n".join(lines[:100])
+        return f"{truncated_output}\n\n--- Truncated. Showing 100 of {len(lines)} results. ---\nRefine your query or use jq slicing: .items[100:200]"
+    
+    return output
+
+
 @mcp.tool()
 def append_text(path: str, content: str) -> str:
     """

@@ -130,7 +130,7 @@ Plans:
 **Plans:** 1 plan
 
 Plans:
-- [ ] 04-1-01-PLAN.md — Enhance query_json and query_yaml to use temp file approach
+- [x] 04-1-01-PLAN.md — Enhance query_json and query_yaml to use temp file approach
 
 **Success Criteria:**
 
@@ -183,9 +183,9 @@ This urgent insertion addresses limitations discovered during Phase 4 execution.
 | Phase 2 | Complete | Workflow optimization | 4/4 | Agent guidance: improved tool descriptions, weak agent validation |
 | Phase 3 | Pending | Production polish | 0/4 | Cleanup: remove placeholder, documentation, observability |
 | Phase 4 | Complete | Add jq and yq for querying large json and yaml files | 5/5 | Structured data query tools with bounded output |
-| Phase 4.1 | Planning | Enhance jq and yq to handle complex multiline queries request | 0/5 | INSERTED - Urgent: Handle complex multiline expressions |
+| Phase 4.1 | Complete | Enhance jq and yq to handle complex multiline queries request | 5/5 | INSERTED - Urgent: Handle complex multiline expressions |
 
 ---
 
 **Last Updated:** 2026-01-27
-**Roadmap Status:** Phase 4.1 planned
+**Roadmap Status:** Phase 4.1 complete

@@ -25,7 +25,7 @@ import subprocess
 
 from dataclasses import dataclass
 from .edit_tool import EditResult, RooStyleEditTool, propose_and_review_logic
-from .utils import check_ripgrep
+from .utils import check_ripgrep, check_jq, check_yq
 
 
 # --- Global Configuration ---
@@ -34,11 +34,13 @@ ALLOWED_DIRS: List[Path] = []
 mcp = FastMCP("filesystem", stateless_http=True)
 IS_VSCODE_CLI_AVAILABLE = False
 IS_RIPGREP_AVAILABLE = False
+IS_JQ_AVAILABLE = False
+IS_YQ_AVAILABLE = False
 
 
 def initialize(directories: List[str]):
     """Initialize the allowed directories and check for VS Code CLI."""
-    global ALLOWED_DIRS, USER_ACCESSIBLE_DIRS, IS_VSCODE_CLI_AVAILABLE, IS_RIPGREP_AVAILABLE
+    global ALLOWED_DIRS, USER_ACCESSIBLE_DIRS, IS_VSCODE_CLI_AVAILABLE, IS_RIPGREP_AVAILABLE, IS_JQ_AVAILABLE, IS_YQ_AVAILABLE
     ALLOWED_DIRS.clear()
     USER_ACCESSIBLE_DIRS.clear()
     
@@ -46,6 +48,14 @@ def initialize(directories: List[str]):
     IS_RIPGREP_AVAILABLE, ripgrep_message = check_ripgrep()
     if not IS_RIPGREP_AVAILABLE:
         print(ripgrep_message)
+
+    IS_JQ_AVAILABLE, jq_message = check_jq()
+    if not IS_JQ_AVAILABLE:
+        print(jq_message)
+    
+    IS_YQ_AVAILABLE, yq_message = check_yq()
+    if not IS_YQ_AVAILABLE:
+        print(yq_message)
 
     raw_dirs = directories or [str(Path.cwd())]
     
@@ -143,7 +153,7 @@ def list_allowed_directories() -> str:
     return "\n".join(str(d) for d in USER_ACCESSIBLE_DIRS)
 
 @mcp.tool()
-def read_files(files: List[FileReadRequest]) -> str:
+def read_files(files: List[FileReadRequest], large_file_passthrough: bool = False) -> str:
     """
     Read the contents of multiple files simultaneously.
     Returns path and content separated by dashes.
@@ -184,7 +194,9 @@ def read_files(files: List[FileReadRequest]) -> str:
     # Step 3: Continue reading in chunks (lines 500-1000, 1000-1500, etc.)
     # Note: To skip to a specific section, calculate offset based on line numbers
     ```
-
+    Args:
+        files: A list of file read requests.
+        large_file_passthrough: If False (default), blocks reading JSON/YAML files >100k tokens and suggests using query_json/query_yaml instead. Set to True to read anyway.
     """
     results = []
     for file_request_data in files:
@@ -195,6 +207,27 @@ def read_files(files: List[FileReadRequest]) -> str:
             
         try:
             path_obj = validate_path(file_request.path)
+
+            # Large file check for JSON/YAML
+            if not large_file_passthrough and path_obj.exists() and not path_obj.is_dir():
+                file_ext = path_obj.suffix.lower()
+                if file_ext in ['.json', '.yaml', '.yml']:
+                    file_size = os.path.getsize(path_obj)
+                    tokens = file_size / 4  # Approximate token count
+                    if tokens > 100_000:
+                        file_type = "JSON" if file_ext == '.json' else "YAML"
+                        query_tool = "query_json" if file_type == "JSON" else "query_yaml"
+                        error_message = (
+                            f"Error: {file_request.path} is a large {file_type} file (~{tokens:,.0f} tokens).\n\n"
+                            f"Reading the entire file may overflow your context window. Consider using:\n"
+                            f"- {query_tool}(\"{file_request.path}\", \"keys\") to explore structure\n"
+                            f"- {query_tool}(\"{file_request.path}\", \".items[0:10]\") to preview data\n"
+                            f"- {query_tool}(\"{file_request.path}\", \".items[] | select(.field == 'value')\") to filter\n\n"
+                            f"Or set large_file_passthrough=True to read anyway."
+                        )
+                        results.append(f"File: {file_request.path}\n{error_message}")
+                        continue
+
             if (file_request.head is not None or file_request.tail is not None) and \
                (file_request.start_line is not None or file_request.end_line is not None):
                 raise ValueError("Cannot mix start_line/end_line with head/tail.")
@@ -696,6 +729,141 @@ def grep_content(pattern: str, search_path: str = '.', case_insensitive: bool = 
 
     return "\n\n".join(output_lines)
 
+
+
+
+@mcp.tool()
+def query_json(file_path: str, jq_expression: str, timeout: int = 30) -> str:
+    """
+    Query a JSON file using jq expressions. Use this to efficiently explore large JSON files
+    without reading the entire content into memory.
+    
+    **Common Query Patterns:**
+    - Get specific field: '.field_name'
+    - Array iteration: '.items[]'
+    - Filter array: '.items[] | select(.active == true)'
+    - Select fields: '.items[] | {name, id}'
+    - Array slice: '.items[0:100]' (first 100 items)
+    - Count items: '.items | length'
+    
+    **Workflow Example:**
+    1. Get structure overview: query_json("data.json", "keys")
+    2. Count array items: query_json("data.json", ".items | length")
+    3. Explore first few: query_json("data.json", ".items[0:5]")
+    4. Filter specific: query_json("data.json", ".items[] | select(.status == 'active')")
+    
+    **Result Limit:** Returns first 100 results. For more, use slicing: .items[100:200]
+    
+    Args:
+        file_path: Path to JSON file (relative or absolute)
+        jq_expression: jq query expression (see https://jqlang.github.io/jq/manual/)
+        timeout: Query timeout in seconds (default: 30)
+    
+    Returns:
+        Compact JSON results (one per line), or error message
+    """
+    if not IS_JQ_AVAILABLE:
+        _, msg = check_jq()
+        return f"Error: jq is not available. {msg}"
+
+    validated_path = validate_path(file_path)
+    
+    command = ['jq', '-c', jq_expression, str(validated_path)]
+    
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False
+        )
+    except FileNotFoundError:
+        return "Error: 'jq' command not found. Please ensure jq is installed and in your PATH."
+    except subprocess.TimeoutExpired:
+        return f"Error: Query timed out after {timeout} seconds. Please simplify your query."
+    
+    if result.returncode != 0:
+        return f"Query error: {result.stderr.strip()}"
+    
+    output = result.stdout.strip()
+    if not output or output == 'null':
+        return "No results found."
+        
+    lines = output.split('\n')
+    
+    if len(lines) > 100:
+        truncated_output = "\n".join(lines[:100])
+        return f"{truncated_output}\n\n--- Truncated. Showing 100 of {len(lines)} results. ---\nRefine your query or use jq slicing: .items[100:200]"
+    
+    return output
+
+
+
+@mcp.tool()
+def query_yaml(file_path: str, yq_expression: str, timeout: int = 30) -> str:
+    """
+    Query a YAML file using yq expressions (mikefarah/yq with jq-like syntax). Use this to efficiently explore large YAML files without reading the entire content into memory.
+
+    **Common Query Patterns:**
+    - Get specific field: '.field_name'
+    - Array iteration: '.items[]'
+    - Filter array: '.items[] | select(.active == true)'
+    - Select fields: '.items[] | {name, id}'
+    - Array slice: '.items[0:100]' (first 100 items)
+    - Count items: '.items | length'
+
+    **Workflow Example:**
+    1. Get structure overview: query_yaml("config.yaml", "keys")
+    2. Count array items: query_yaml("config.yaml", ".services | length")
+    3. Explore first few: query_yaml("config.yaml", ".services[0:5]")
+    4. Filter specific: query_yaml("config.yaml", ".services[] | select(.enabled == true)")
+
+    **Result Limit:** Returns first 100 results. For more, use slicing: .items[100:200]
+
+    Args:
+        file_path: Path to YAML file (relative or absolute)
+        yq_expression: yq query expression (jq-like syntax, see mikefarah.gitbook.io/yq)
+        timeout: Query timeout in seconds (default: 30)
+
+    Returns:
+        Compact JSON results (one per line), or error message
+    """
+    if not IS_YQ_AVAILABLE:
+        _, msg = check_yq()
+        return f"Error: yq is not available. {msg}"
+
+    validated_path = validate_path(file_path)
+    
+    command = ['yq', '-o=json', '-I=0', yq_expression, str(validated_path)]
+    
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False
+        )
+    except FileNotFoundError:
+        return "Error: 'yq' command not found. Please ensure yq is installed and in your PATH."
+    except subprocess.TimeoutExpired:
+        return f"Error: Query timed out after {timeout} seconds. Please simplify your query."
+    
+    if result.returncode != 0:
+        return f"Query error: {result.stderr.strip()}"
+    
+    output = result.stdout.strip()
+    if not output or output == 'null':
+        return "No results found."
+        
+    lines = output.split('\n')
+    
+    if len(lines) > 100:
+        truncated_output = "\n".join(lines[:100])
+        return f"{truncated_output}\n\n--- Truncated. Showing 100 of {len(lines)} results. ---\nRefine your query or use yq slicing: .items[100:200]"
+    
+    return output
 
 
 @mcp.tool()

@@ -104,8 +104,8 @@ Add ripgrep-based content search to fs-mcp with automatic dependency detection, 
 **Plans:** 2 plans
 
 Plans:
-- [ ] 04-01-PLAN.md — Add jq/yq dependency detection with graceful degradation
-- [ ] 04-02-PLAN.md — Implement query_json, query_yaml tools and enhance read_files
+- [x] 04-01-PLAN.md — Add jq/yq dependency detection with graceful degradation
+- [x] 04-02-PLAN.md — Implement query_json, query_yaml tools and enhance read_files
 
 **Success Criteria:**
 
@@ -154,7 +154,7 @@ Plans:
 | Phase 1 | Complete | Ripgrep integration, core grep tool | 5/5 | Foundation: startup detection, bounded search, error handling |
 | Phase 2 | Complete | Workflow optimization | 4/4 | Agent guidance: improved tool descriptions, weak agent validation |
 | Phase 3 | Pending | Production polish | 0/4 | Cleanup: remove placeholder, documentation, observability |
-| Phase 4 | Pending | Add jq and yq for querying large json and yaml files | 0/5 | Structured data query tools with bounded output |
+| Phase 4 | Complete | Add jq and yq for querying large json and yaml files | 5/5 | Structured data query tools with bounded output |
 
 ---
 

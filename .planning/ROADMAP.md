@@ -147,6 +147,22 @@ Plans:
 **Details:**
 This urgent insertion addresses limitations discovered during Phase 4 execution. Agents need to execute complex queries that span multiple lines or contain special characters that are difficult to escape in command-line arguments.
 
+
+---
+
+### Phase 5: enhance Section-Aware Reading
+
+**Goal:** Enable agents to read logical sections of code without pre-calculating end lines.
+**Depends on:** Phase 4.1
+**Plans:** 2 plans
+
+Plans:
+- [x] 05-1-PLAN.md — Enhance read_files for section-aware reading.
+- [x] 05-2-PLAN.md — Enhance grep_content with section end hints.
+
+**Details:**
+This phase enhances the `read_files` tool to read from a starting line to a regex pattern and enhances `grep_content` to provide hints for where sections might end, completing the "grep -> read section" workflow.
+
 ---
 
 ## Requirement Mapping

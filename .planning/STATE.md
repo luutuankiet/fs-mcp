@@ -24,15 +24,17 @@ Complete query tool implementation with bounded output, agent workflow guidance,
 
 ## Current Position
 
-**Milestone Status:** Phase 4.1 complete
-
-**Active Phase:** Phase 4.1 - Enhance jq and yq to handle complex multiline queries
+**Milestone Status:** All phases complete
+**Active Phase:** None
 **Progress:**
-- Phase 4.1 Plan 1 complete (enhance query tools with temp file approach)
+- Phase 5 Plan 1 complete (enhance read_files for section-aware reading)
+- Phase 5 Plan 2 complete (enhance grep_content with section end hints)
 
 **Progress Bar:**
 ```
-[██████████████████████████████████████] 100% (Phase 4.1 complete)
+[████████████████████████████████████████████████████████████] 100% (Phase 5 complete)
+```
+[████████████████████████████████████████████████████████████] 100% (Phase 5 complete)
 ```
 
 ---
@@ -40,11 +42,13 @@ Complete query tool implementation with bounded output, agent workflow guidance,
 ## Key Artifacts
 
 **ROADMAP.md**
-- 4 phases derived from requirements
+- 5 phases derived from requirements
 - Phase 1: Ripgrep Integration & Core Grep Tool (13 requirements) - **Complete**
 - Phase 2: Agent Workflow Optimization (3 requirements) - **Complete**
 - Phase 3: Production Polish & Cleanup (1 requirement) - **Complete**
 - Phase 4: Add jq and yq for querying large json and yaml files - **Complete**
+- Phase 4.1: Enhance jq and yq to handle complex multiline queries request - **Complete**
+- Phase 5: enhance Section-Aware Reading - **Complete**
 - 100% requirement coverage
 
 **REQUIREMENTS.md**
@@ -70,6 +74,12 @@ Complete query tool implementation with bounded output, agent workflow guidance,
 10. **Follow ripgrep pattern for subprocess execution:** For consistency in error handling and result limiting.
 11. **Make large file check in `read_files` opt-out:** To prevent accidental context overflows by agents.
 12. **Temp file approach for complex CLI inputs:** Use tempfile.NamedTemporaryFile for query expressions to avoid shell escaping issues. Write content, close, execute subprocess with -f/--from-file flag, cleanup in finally block.
+13. **Use default section patterns for `grep_content` hinting:** Provide immediate utility without agent configuration.
+14. **Make `grep_content` hint generation skippable:** Allow agents to pass `[]` to disable the feature.
+15. **Suppress hint generation errors:** Prevent the enhancement from ever breaking core `grep_content` functionality.
+16. **Use `itertools.islice` for efficient file slicing:** Ensures memory-safe reading of file sections.
+17. **Return structured errors for invalid `read_files` parameters:** Helps agents self-correct on invalid input combinations.
+18. **Read to EOF if `read_to_next_pattern` is not found:** Provides predictable behavior for agents when a pattern is missing.
 
 ### Implementation Notes
 
@@ -97,6 +107,7 @@ None currently.
 
 ### Roadmap Evolution
 
+- Phase 5 added: enhance Section-Aware Reading
 - Phase 4 added: Add jq and yq for querying large json and yaml files
 - Phase 4.1 inserted after Phase 4: Enhance jq and yq to handle complex multiline queries request (URGENT)
 
@@ -104,11 +115,11 @@ None currently.
 
 ## Session Continuity
 
-**Last Activity:** 2026-01-27 - Phase 4.1, Plan 1 execution complete
+**Last Activity:** 2026-01-27 - Phase 5, Plan 2 execution complete
 
 **What's Next:**
-Phase 4.1 complete - enhanced query tools with multiline support
+All phases are complete. The project milestone is complete.
 
 ---
 
-**Last Updated:** 2026-01-27 (after 04-1-01 plan execution)
+**Last Updated:** 2026-01-27 (after 05-2 plan execution)

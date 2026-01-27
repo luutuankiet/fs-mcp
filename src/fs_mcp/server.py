@@ -1,4 +1,6 @@
 import json
+import re
+import itertools
 from pydantic import BaseModel
 from typing import Optional
 
@@ -8,6 +10,7 @@ class FileReadRequest(BaseModel):
     tail: Optional[int] = None
     start_line: Optional[int] = None
     end_line: Optional[int] = None
+    read_to_next_pattern: Optional[str] = None
 
 
 import os
@@ -652,7 +655,7 @@ def grounding_search(query: str) -> str:
 
 
 @mcp.tool()
-def grep_content(pattern: str, search_path: str = '.', case_insensitive: bool = False, context_lines: int = 2) -> str:
+def grep_content(pattern: str, search_path: str = '.', case_insensitive: bool = False, context_lines: int = 2, section_patterns: Optional[List[str]] = None) -> str:
     """
     Search for a pattern in file contents using ripgrep.
 

@@ -153,7 +153,7 @@ def list_allowed_directories() -> str:
     return "\n".join(str(d) for d in USER_ACCESSIBLE_DIRS)
 
 @mcp.tool()
-def read_files(files: List[FileReadRequest]) -> str:
+def read_files(files: List[FileReadRequest], large_file_passthrough: bool = False) -> str:
     """
     Read the contents of multiple files simultaneously.
     Returns path and content separated by dashes.
@@ -194,7 +194,9 @@ def read_files(files: List[FileReadRequest]) -> str:
     # Step 3: Continue reading in chunks (lines 500-1000, 1000-1500, etc.)
     # Note: To skip to a specific section, calculate offset based on line numbers
     ```
-
+    Args:
+        files: A list of file read requests.
+        large_file_passthrough: If False (default), blocks reading JSON/YAML files >100k tokens and suggests using query_json/query_yaml instead. Set to True to read anyway.
     """
     results = []
     for file_request_data in files:
@@ -205,6 +207,27 @@ def read_files(files: List[FileReadRequest]) -> str:
             
         try:
             path_obj = validate_path(file_request.path)
+
+            # Large file check for JSON/YAML
+            if not large_file_passthrough and path_obj.exists() and not path_obj.is_dir():
+                file_ext = path_obj.suffix.lower()
+                if file_ext in ['.json', '.yaml', '.yml']:
+                    file_size = os.path.getsize(path_obj)
+                    tokens = file_size / 4  # Approximate token count
+                    if tokens > 100_000:
+                        file_type = "JSON" if file_ext == '.json' else "YAML"
+                        query_tool = "query_json" if file_type == "JSON" else "query_yaml"
+                        error_message = (
+                            f"Error: {file_request.path} is a large {file_type} file (~{tokens:,.0f} tokens).\n\n"
+                            f"Reading the entire file may overflow your context window. Consider using:\n"
+                            f"- {query_tool}(\"{file_request.path}\", \"keys\") to explore structure\n"
+                            f"- {query_tool}(\"{file_request.path}\", \".items[0:10]\") to preview data\n"
+                            f"- {query_tool}(\"{file_request.path}\", \".items[] | select(.field == 'value')\") to filter\n\n"
+                            f"Or set large_file_passthrough=True to read anyway."
+                        )
+                        results.append(f"File: {file_request.path}\n{error_message}")
+                        continue
+
             if (file_request.head is not None or file_request.tail is not None) and \
                (file_request.start_line is not None or file_request.end_line is not None):
                 raise ValueError("Cannot mix start_line/end_line with head/tail.")

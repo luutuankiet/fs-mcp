@@ -713,7 +713,7 @@ def grounding_search(query: str) -> str:
 
 
 @mcp.tool()
-def grep_content(pattern: str, search_path: str = '.', case_insensitive: bool = False, context_lines: int = 2) -> str:
+def grep_content(pattern: str, search_path: str = '.', case_insensitive: bool = False, context_lines: int = 2, section_patterns: Optional[List[str]] = None) -> str:
     """
     Search for a pattern in file contents using ripgrep.
 
@@ -728,11 +728,17 @@ def grep_content(pattern: str, search_path: str = '.', case_insensitive: bool = 
     # Step 1: Find where 'FastMCP' is defined.
     grep_content(pattern="class FastMCP")
 
-    # Output might be: File: src/fs_mcp/server.py, Line: 20
+    # Output might be: File: src/fs_mcp/server.py, Line: 20 (section end hint: L42)
 
     # Step 2: Read the relevant section of that file.
-    read_files([{"path": "src/fs_mcp/server.py", "start_line": 15, "end_line": 25}])
+    read_files([{"path": "src/fs_mcp/server.py", "start_line": 20, "end_line": 42}])
     ```
+    
+    **Section End Hinting:**
+    - The tool can optionally provide a `section_end_hint` to suggest where a logical block (like a function or class) ends.
+    - This is enabled by default with patterns for Python (`def`, `class`).
+    - To use custom patterns, provide `section_patterns=["^\\s*custom_pattern"]`.
+    - To disable, pass `section_patterns=[]`.
     """
     if not IS_RIPGREP_AVAILABLE:
         _, msg = check_ripgrep()
@@ -771,16 +777,51 @@ def grep_content(pattern: str, search_path: str = '.', case_insensitive: bool = 
 
     output_lines = []
     matches_found = False
+    
+    # --- Section End Hinting Configuration ---
+    active_patterns = []
+    if section_patterns is None:
+        # Default Python patterns
+        active_patterns = [r'^\\s*def ', r'^\\s*class ']
+    elif section_patterns: # Not an empty list
+        active_patterns = section_patterns
+
     for line in result.stdout.strip().split('\\n'):
         try:
             message = json.loads(line)
             if message['type'] == 'match':
                 matches_found = True
                 data = message['data']
-                path = data['path']['text']
+                path_str = data['path']['text']
                 line_number = data['line_number']
                 text = data['lines']['text']
-                output_lines.append(f"File: {path}, Line: {line_number}\\n---\\n{text.strip()}\\n---")
+                
+                hint = ""
+                # --- Generate Hint if Enabled ---
+                if active_patterns:
+                    try:
+                        result_file_path = validate_path(path_str)
+                        with open(result_file_path, 'r', encoding='utf-8') as f:
+                            # Use islice to efficiently seek to the line after the match
+                            line_iterator = itertools.islice(f, line_number, None)
+                            
+                            end_line_num = -1
+                            # Scan subsequent lines for a pattern match
+                            for i, subsequent_line in enumerate(line_iterator, start=line_number + 1):
+                                if any(re.search(p, subsequent_line) for p in active_patterns):
+                                    end_line_num = i
+                                    break
+                            
+                            if end_line_num != -1:
+                                hint = f" (section end hint: L{end_line_num})"
+                            else:
+                                hint = " (section end hint: EOF)"
+
+                    except Exception:
+                        # If hint generation fails for any reason, just don't add it.
+                        pass
+
+                output_lines.append(f"File: {path_str}, Line: {line_number}{hint}\\n---\\n{text.strip()}\\n---")
         except (json.JSONDecodeError, KeyError):
             # Ignore non-match lines or lines with unexpected structure
             continue

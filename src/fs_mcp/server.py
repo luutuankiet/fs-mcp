@@ -834,6 +834,12 @@ def query_yaml(file_path: str, yq_expression: str, timeout: int = 30) -> str:
     - Array slice: '.items[0:100]' (first 100 items)
     - Count items: '.items | length'
 
+    **Multiline Queries (with comments):**
+    query_yaml("config.yaml", '''
+    # Filter active services
+    .services[] | select(.active == true)
+    ''')
+
     **Workflow Example:**
     1. Get structure overview: query_yaml("config.yaml", "keys")
     2. Count array items: query_yaml("config.yaml", ".services | length")
@@ -855,36 +861,51 @@ def query_yaml(file_path: str, yq_expression: str, timeout: int = 30) -> str:
         return f"Error: yq is not available. {msg}"
 
     validated_path = validate_path(file_path)
-    
-    command = ['yq', '-o=json', '-I=0', yq_expression, str(validated_path)]
-    
+
+    # Create temp file for query expression to avoid command-line escaping issues
+    temp_file = None
     try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False
-        )
-    except FileNotFoundError:
-        return "Error: 'yq' command not found. Please ensure yq is installed and in your PATH."
-    except subprocess.TimeoutExpired:
-        return f"Error: Query timed out after {timeout} seconds. Please simplify your query."
-    
-    if result.returncode != 0:
-        return f"Query error: {result.stderr.strip()}"
-    
-    output = result.stdout.strip()
-    if not output or output == 'null':
-        return "No results found."
-        
-    lines = output.split('\n')
-    
-    if len(lines) > 100:
-        truncated_output = "\n".join(lines[:100])
-        return f"{truncated_output}\n\n--- Truncated. Showing 100 of {len(lines)} results. ---\nRefine your query or use yq slicing: .items[100:200]"
-    
-    return output
+        temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.yq', delete=False)
+        temp_file.write(yq_expression)
+        temp_file.close()
+
+        command = ['yq', '-o', 'json', '-I', '0', '--from-file', temp_file.name, str(validated_path)]
+
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False
+            )
+        except FileNotFoundError:
+            return "Error: 'yq' command not found. Please ensure yq is installed and in your PATH."
+        except subprocess.TimeoutExpired:
+            return f"Error: Query timed out after {timeout} seconds. Please simplify your query."
+
+        if result.returncode != 0:
+            error_msg = result.stderr.strip()
+            return f"yq syntax error: {error_msg}. Check your query for common issues (unclosed brackets, missing semicolons, undefined functions)."
+
+        output = result.stdout.strip()
+        if not output or output == 'null':
+            return "No results found."
+
+        lines = output.split('\n')
+
+        if len(lines) > 100:
+            truncated_output = "\n".join(lines[:100])
+            return f"{truncated_output}\n\n--- Truncated. Showing 100 of {len(lines)} results. ---\nRefine your query or use yq slicing: .items[100:200]"
+
+        return output
+    finally:
+        # Clean up temp file
+        if temp_file is not None:
+            try:
+                os.unlink(temp_file.name)
+            except Exception:
+                pass
 
 
 @mcp.tool()

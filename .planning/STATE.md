@@ -24,15 +24,15 @@ Complete query tool implementation with bounded output, agent workflow guidance,
 
 ## Current Position
 
-**Milestone Status:** Phase 4 complete
+**Milestone Status:** Phase 4.1 complete
 
-**Active Phase:** 
+**Active Phase:** Phase 4.1 - Enhance jq and yq to handle complex multiline queries
 **Progress:**
-- This milestone is complete.
+- Phase 4.1 Plan 1 complete (enhance query tools with temp file approach)
 
 **Progress Bar:**
 ```
-[██████████████████████████████████████] 100% (Milestone complete)
+[██████████████████████████████████████] 100% (Phase 4.1 complete)
 ```
 
 ---
@@ -69,6 +69,7 @@ Complete query tool implementation with bounded output, agent workflow guidance,
 9. **Use a virtual environment for dependencies:** To resolve dependency conflicts and isolate the project environment.
 10. **Follow ripgrep pattern for subprocess execution:** For consistency in error handling and result limiting.
 11. **Make large file check in `read_files` opt-out:** To prevent accidental context overflows by agents.
+12. **Temp file approach for complex CLI inputs:** Use tempfile.NamedTemporaryFile for query expressions to avoid shell escaping issues. Write content, close, execute subprocess with -f/--from-file flag, cleanup in finally block.
 
 ### Implementation Notes
 
@@ -97,16 +98,17 @@ None currently.
 ### Roadmap Evolution
 
 - Phase 4 added: Add jq and yq for querying large json and yaml files
+- Phase 4.1 inserted after Phase 4: Enhance jq and yq to handle complex multiline queries request (URGENT)
 
 ---
 
 ## Session Continuity
 
-**Last Activity:** 2026-01-27 - Phase 4, Plan 2 execution complete
+**Last Activity:** 2026-01-27 - Phase 4.1, Plan 1 execution complete
 
 **What's Next:**
-/gsd-audit-milestone
+Phase 4.1 complete - enhanced query tools with multiline support
 
 ---
 
-**Last Updated:** 2026-01-27 (after 04-02 plan execution)
+**Last Updated:** 2026-01-27 (after 04-1-01 plan execution)

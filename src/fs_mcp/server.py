@@ -713,6 +713,17 @@ def grep_content(pattern: str, search_path: str = '.', case_insensitive: bool = 
 
     output_lines = []
     matches_found = False
+    
+    # Determine which patterns to use for section hinting
+    patterns_to_use = []
+    if section_patterns is None:
+        patterns_to_use = [r"^## ", r"^# ", r"^\[LOG-"]  # Default patterns
+    elif section_patterns:  # Not None and not empty
+        patterns_to_use = section_patterns
+
+    # Pre-compile regexes for efficiency if they will be used
+    compiled_patterns = [re.compile(p) for p in patterns_to_use] if patterns_to_use else []
+
     for line in result.stdout.strip().split('\n'):
         try:
             message = json.loads(line)
@@ -722,7 +733,32 @@ def grep_content(pattern: str, search_path: str = '.', case_insensitive: bool = 
                 path = data['path']['text']
                 line_number = data['line_number']
                 text = data['lines']['text']
-                output_lines.append(f"File: {path}, Line: {line_number}\n---\n{text.strip()}\n---")
+                
+                output_chunk = f"File: {path}, Line: {line_number}"
+                
+                # --- Section End Hint Logic ---
+                section_end_hint = None
+                if compiled_patterns:
+                    try:
+                        with open(path, 'r', encoding='utf-8') as f:
+                            # Start scanning from the line *after* the match
+                            line_iterator = itertools.islice(f, line_number, None)
+                            current_line_num = line_number
+                            for file_line in line_iterator:
+                                current_line_num += 1
+                                for compiled_pattern in compiled_patterns:
+                                    if compiled_pattern.search(file_line):
+                                        section_end_hint = current_line_num
+                                        break  # Stop searching patterns for this line
+                                if section_end_hint is not None:
+                                    break  # Stop searching lines for this match
+                    except (FileNotFoundError, UnicodeDecodeError, IOError):
+                        pass # Ignore errors in hint generation, it's a best-effort enhancement
+                
+                if section_end_hint:
+                    output_chunk += f" | section_end_hint: {section_end_hint}"
+                
+                output_lines.append(f"{output_chunk}\n---\n{text.strip()}\n---")
         except (json.JSONDecodeError, KeyError):
             # Ignore non-match lines or lines with unexpected structure
             continue

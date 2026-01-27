@@ -153,7 +153,7 @@ def format_size(size_bytes: float) -> str:
 @mcp.tool()
 def list_allowed_directories() -> str:
     """List the directories this server is allowed to access."""
-    return "\\n".join(str(d) for d in USER_ACCESSIBLE_DIRS)
+    return "\n".join(str(d) for d in USER_ACCESSIBLE_DIRS)
 
 @mcp.tool()
 def read_files(files: List[FileReadRequest], large_file_passthrough: bool = False) -> str:
@@ -211,22 +211,22 @@ def read_files(files: List[FileReadRequest], large_file_passthrough: bool = Fals
             # --- Parameter Validation ---
             if file_request.end_line and file_request.read_to_next_pattern:
                 error_message = (
-                    "Error: Mutually exclusive parameters provided.\\n\\n"
-                    f"You provided: end_line={file_request.end_line}, read_to_next_pattern='{file_request.read_to_next_pattern}'\\n"
-                    "Problem: `end_line` and `read_to_next_pattern` cannot be used together.\\n"
+                    "Error: Mutually exclusive parameters provided.\n\n"
+                    f"You provided: end_line={file_request.end_line}, read_to_next_pattern='{file_request.read_to_next_pattern}'\n"
+                    "Problem: `end_line` and `read_to_next_pattern` cannot be used together.\n"
                     "Fix: Choose one method for defining the read boundary."
                 )
-                results.append(f"File: {file_request.path}\\n{error_message}")
+                results.append(f"File: {file_request.path}\n{error_message}")
                 continue
 
             if file_request.read_to_next_pattern and not file_request.start_line:
                 error_message = (
-                    "Error: Missing required parameter.\\n\\n"
-                    f"You provided: read_to_next_pattern='{file_request.read_to_next_pattern}' without `start_line`.\\n"
-                    "Problem: `read_to_next_pattern` requires a `start_line` to know where to begin scanning.\\n"
+                    "Error: Missing required parameter.\n\n"
+                    f"You provided: read_to_next_pattern='{file_request.read_to_next_pattern}' without `start_line`.\n"
+                    "Problem: `read_to_next_pattern` requires a `start_line` to know where to begin scanning.\n"
                     "Fix: Provide a `start_line`."
                 )
-                results.append(f"File: {file_request.path}\\n{error_message}")
+                results.append(f"File: {file_request.path}\n{error_message}")
                 continue
 
             # Large file check for JSON/YAML
@@ -239,14 +239,14 @@ def read_files(files: List[FileReadRequest], large_file_passthrough: bool = Fals
                         file_type = "JSON" if file_ext == '.json' else "YAML"
                         query_tool = "query_json" if file_type == "JSON" else "query_yaml"
                         error_message = (
-                            f"Error: {file_request.path} is a large {file_type} file (~{tokens:,.0f} tokens).\\n\\n"
-                            f"Reading the entire file may overflow your context window. Consider using:\\n"
-                            f"- {query_tool}(\\"{file_request.path}\\", \"keys\") to explore structure\\n"
-                            f"- {query_tool}(\\"{file_request.path}\\", \".items[0:10]\") to preview data\\n"
-                            f"- {query_tool}(\\"{file_request.path}\\", \".items[] | select(.field == 'value')\") to filter\\n\\n"
+                            f"Error: {file_request.path} is a large {file_type} file (~{tokens:,.0f} tokens).\n\n"
+                            f"Reading the entire file may overflow your context window. Consider using:\n"
+                            f"- {query_tool}(\"{file_request.path}\", \"keys\") to explore structure\n"
+                            f"- {query_tool}(\"{file_request.path}\", \".items[0:10]\") to preview data\n"
+                            f"- {query_tool}(\"{file_request.path}\", \".items[] | select(.field == 'value')\") to filter\n\n"
                             f"Or set large_file_passthrough=True to read anyway."
                         )
-                        results.append(f"File: {file_request.path}\\n{error_message}")
+                        results.append(f"File: {file_request.path}\n{error_message}")
                         continue
 
             if (file_request.head is not None or file_request.tail is not None) and \
@@ -260,6 +260,10 @@ def read_files(files: List[FileReadRequest], large_file_passthrough: bool = Fals
                     with open(path_obj, 'r', encoding='utf-8') as f:
                         if file_request.read_to_next_pattern:
                             start_line = file_request.start_line
+                            if start_line is None:
+                                # This case should ideally be caught by earlier validation, but for safety:
+                                results.append(f"File: {file_request.path}\nError: start_line is required for read_to_next_pattern.")
+                                continue
                             pattern = file_request.read_to_next_pattern
                             
                             lines_to_read = []
@@ -277,13 +281,13 @@ def read_files(files: List[FileReadRequest], large_file_passthrough: bool = Fals
                                     total_lines = sum(1 for _ in count_f)
 
                                 error_message = (
-                                    f"Error: Invalid start_line.\\n\\n"
-                                    f"You provided: start_line={start_line}\\n"
-                                    f"Problem: The file '{file_request.path}' only has {total_lines} lines.\\n"
-                                    f"Fix: Choose a start_line between 1 and {total_lines}.\\n"
+                                    f"Error: Invalid start_line.\n\n"
+                                    f"You provided: start_line={start_line}\n"
+                                    f"Problem: The file '{file_request.path}' only has {total_lines} lines.\n"
+                                    f"Fix: Choose a start_line between 1 and {total_lines}.\n"
                                     f"Tip: Use grep_content to find valid line numbers first."
                                 )
-                                results.append(f"File: {file_request.path}\\n{error_message}")
+                                results.append(f"File: {file_request.path}\n{error_message}")
                                 continue
 
                             # Scan subsequent lines for the pattern
@@ -296,7 +300,7 @@ def read_files(files: List[FileReadRequest], large_file_passthrough: bool = Fals
                             content = "".join(lines_to_read)
                             if not pattern_found:
                                 note = f"Note: Pattern '{pattern}' not found after line {start_line}. Read to end of file."
-                                content = f"{content.rstrip()}\\n{note}\\n"
+                                content = f"{content.rstrip()}\n{note}\n"
 
                         elif file_request.start_line is not None or file_request.end_line is not None:
                             lines = f.readlines()
@@ -312,11 +316,11 @@ def read_files(files: List[FileReadRequest], large_file_passthrough: bool = Fals
                 except UnicodeDecodeError:
                     content = "Error: Binary file. Use read_media_file."
             
-            results.append(f"File: {file_request.path}\\n{content}")
+            results.append(f"File: {file_request.path}\n{content}")
         except Exception as e:
-            results.append(f"File: {file_request.path}\\nError: {e}")
+            results.append(f"File: {file_request.path}\nError: {e}")
             
-    return "\\n\\n---\\n\\n".join(results)
+    return "\n\n---\n\n".join(results)
 
 @mcp.tool()
 def read_media_file(path: str) -> dict:
@@ -359,7 +363,7 @@ def list_directory(path: str) -> str:
     for entry in path_obj.iterdir():
         prefix = "[DIR]" if entry.is_dir() else "[FILE]"
         entries.append(f"{prefix} {entry.name}")
-    return "\\n".join(sorted(entries))
+    return "\n".join(sorted(entries))
 
 @mcp.tool()
 def list_directory_with_sizes(path: str) -> str:
@@ -375,7 +379,7 @@ def list_directory_with_sizes(path: str) -> str:
             size_str = "" if entry.is_dir() else format_size(s)
             output.append(f"{prefix} {entry.name.ljust(30)} {size_str}")
         except: continue
-    return "\\n".join(sorted(output))
+    return "\n".join(sorted(output))
 
 @mcp.tool()
 def move_file(source: str, destination: str) -> str:
@@ -392,102 +396,9 @@ def search_files(path: str, pattern: str) -> str:
     root = validate_path(path)
     try:
         results = [str(p.relative_to(root)) for p in root.rglob(pattern) if p.is_file()]
-        return "\\n".join(results) or "No matches found."
+        return "\n".join(results) or "No matches found."
     except Exception as e:
         return f"Error during search: {e}"
-
-
-@mcp.tool()
-def get_file_info(path: str) -> str:
-    """
-    Retrieve detailed metadata about a file, including size, structure analysis, and 
-    recommended chunking strategy for large files. This tool is CRITICAL before reading 
-    large files to avoid context overflow errors.
-    
-    Returns:
-    - Basic metadata (path, type, size, modified time)
-    - Line count (for text files)
-    - Estimated token count
-    - File type-specific analysis (JSON structure, CSV columns, etc.)
-    - Recommended chunk size for iterative reading with read_files
-    
-    Prefer relative paths.
-    """
-    p = validate_path(path)
-    
-    if not p.exists():
-        return f"Error: File not found at {path}"
-    
-    s = p.stat()
-    is_dir = p.is_dir()
-    
-    # Basic info
-    info_lines = [
-        f"Path: {p}",
-        f"Type: {'Directory' if is_dir else 'File'}",
-        f"Size: {format_size(s.st_size)} ({s.st_size:,} bytes)",
-        f"Modified: {datetime.fromtimestamp(s.st_mtime)}"
-    ]
-    
-    if is_dir:
-        return "\\n".join(info_lines)
-    
-    # For files, add detailed analysis
-    try:
-        # Detect file type
-        suffix = p.suffix.lower()
-        mime_type, _ = mimetypes.guess_type(p)
-        
-        # Try to read as text
-        try:
-            content = p.read_text(encoding='utf-8')
-            char_count = len(content)
-            line_count = content.count('\\n') + 1
-            estimated_tokens = char_count // 4  # Rough approximation
-            
-            info_lines.append(f"\\n--- Text File Analysis ---")
-            info_lines.append(f"Total Lines: {line_count:,}")
-            info_lines.append(f"Total Characters: {char_count:,}")
-            info_lines.append(f"Estimated Tokens: {estimated_tokens:,} (rough estimate: chars ÷ 4)")
-            
-            # Adaptive chunk size recommendation
-            chunk_recommendation = _calculate_adaptive_chunk_size(estimated_tokens, line_count, p)
-            info_lines.append(f"\\n--- Chunking Strategy ---")
-            info_lines.append(chunk_recommendation)
-            
-            # File type-specific analysis
-            if suffix == '.json' and char_count < 10_000_000:  # Don't parse huge files
-                type_specific = _analyze_json_structure(content)
-                if type_specific:
-                    info_lines.append(f"\\n--- JSON Structure Preview ---")
-                    info_lines.append(type_specific)
-            
-            elif suffix == '.csv' and line_count > 1:
-                type_specific = _analyze_csv_structure(content)
-                if type_specific:
-                    info_lines.append(f"\\n--- CSV Structure ---")
-                    info_lines.append(type_specific)
-            
-            elif suffix in ['.txt', '.md', '.log']:
-                lines = content.split('\\n')
-                preview_lines = []
-                if len(lines) > 0:
-                    preview_lines.append(f"First line: {lines[0][:100]}")
-                if len(lines) > 1:
-                    preview_lines.append(f"Last line: {lines[-1][:100]}")
-                if preview_lines:
-                    info_lines.append(f"\\n--- Content Preview ---")
-                    info_lines.extend(preview_lines)
-                    
-        except UnicodeDecodeError:
-            info_lines.append(f"\\n--- Binary File ---")
-            info_lines.append(f"MIME Type: {mime_type or 'application/octet-stream'}")
-            info_lines.append(f"Note: Use read_media_file() for binary content")
-    
-    except Exception as e:
-        info_lines.append(f"\\nWarning: Could not analyze file content: {e}")
-    
-    return "\\n".join(info_lines)
 
 
 def _calculate_adaptive_chunk_size(estimated_tokens: int, line_count: int, p: Path) -> str:
@@ -532,7 +443,7 @@ def _calculate_adaptive_chunk_size(estimated_tokens: int, line_count: int, p: Pa
         f"Estimated tokens per chunk: ~{int(recommended_lines * tokens_per_line):,}"
     ]
     
-    return "\\n".join(strategy)
+    return "\n".join(strategy)
 
 
 def _analyze_json_structure(content: str) -> Optional[str]:
@@ -562,7 +473,7 @@ def _analyze_json_structure(content: str) -> Optional[str]:
                 if isinstance(first_item, dict):
                     lines.append(f"First item keys: {', '.join(list(first_item.keys())[:10])}")
         
-        return "\\n".join(lines)
+        return "\n".join(lines)
     except json.JSONDecodeError:
         return "⚠️  Invalid JSON (parse error)"
     except Exception as e:
@@ -572,7 +483,7 @@ def _analyze_json_structure(content: str) -> Optional[str]:
 def _analyze_csv_structure(content: str) -> Optional[str]:
     """Analyze CSV structure and return column information."""
     try:
-        lines = content.split('\\n')
+        lines = content.split('\n')
         if len(lines) < 1:
             return None
         
@@ -588,9 +499,105 @@ def _analyze_csv_structure(content: str) -> Optional[str]:
         if len(columns) > 10:
             result_lines.append(f"  ... and {len(columns) - 10} more columns")
         
-        return "\\n".join(result_lines)
+        return "\n".join(result_lines)
     except Exception:
         return None
+
+@mcp.tool()
+def get_file_info(path: str) -> str:
+    """
+    Retrieve detailed metadata about a file, including size, structure analysis, and 
+    recommended chunking strategy for large files. This tool is CRITICAL before reading 
+    large files to avoid context overflow errors.
+    
+    Returns:
+    - Basic metadata (path, type, size, modified time)
+    - Line count (for text files)
+    - Estimated token count
+    - File type-specific analysis (JSON structure, CSV columns, etc.)
+    - Recommended chunk size for iterative reading with read_files
+    
+    Prefer relative paths.
+    """
+    p = validate_path(path)
+    
+    if not p.exists():
+        return f"Error: File not found at {path}"
+    
+    s = p.stat()
+    is_dir = p.is_dir()
+    
+    # Basic info
+    info_lines = [
+        f"Path: {p}",
+        f"Type: {'Directory' if is_dir else 'File'}",
+        f"Size: {format_size(s.st_size)} ({s.st_size:,} bytes)",
+        f"Modified: {datetime.fromtimestamp(s.st_mtime)}"
+    ]
+    
+    if is_dir:
+        return "\n".join(info_lines)
+    
+    # For files, add detailed analysis
+    try:
+        # Detect file type
+        suffix = p.suffix.lower()
+        mime_type, _ = mimetypes.guess_type(p)
+        
+        # Try to read as text
+        try:
+            content = p.read_text(encoding='utf-8')
+            char_count = len(content)
+            line_count = content.count('\n') + 1
+            estimated_tokens = char_count // 4  # Rough approximation
+            
+            info_lines.append(f"\n--- Text File Analysis ---")
+            info_lines.append(f"Total Lines: {line_count:,}")
+            info_lines.append(f"Total Characters: {char_count:,}")
+            info_lines.append(f"Estimated Tokens: {estimated_tokens:,} (rough estimate: chars ÷ 4)")
+            
+            # Adaptive chunk size recommendation
+            chunk_recommendation = _calculate_adaptive_chunk_size(estimated_tokens, line_count, p)
+            info_lines.append(f"\n--- Chunking Strategy ---")
+            info_lines.append(chunk_recommendation)
+            
+            # File type-specific analysis
+            if suffix == '.json' and char_count < 10_000_000:  # Don't parse huge files
+                type_specific = _analyze_json_structure(content)
+                if type_specific:
+                    info_lines.append(f"\n--- JSON Structure Preview ---")
+                    info_lines.append(type_specific)
+            
+            elif suffix == '.csv' and line_count > 1:
+                type_specific = _analyze_csv_structure(content)
+                if type_specific:
+                    info_lines.append(f"\n--- CSV Structure ---")
+                    info_lines.append(type_specific)
+            
+            elif suffix in ['.txt', '.md', '.log']:
+                lines = content.split('\n')
+                preview_lines = []
+                if len(lines) > 0:
+                    preview_lines.append(f"First line: {lines[0][:100]}")
+                if len(lines) > 1:
+                    preview_lines.append(f"Last line: {lines[-1][:100]}")
+                if preview_lines:
+                    info_lines.append(f"\n--- Content Preview ---")
+                    info_lines.extend(preview_lines)
+                    
+        except UnicodeDecodeError:
+            info_lines.append(f"\n--- Binary File ---")
+            info_lines.append(f"MIME Type: {mime_type or 'application/octet-stream'}")
+            info_lines.append(f"Note: Use read_media_file() for binary content")
+    
+    except Exception as e:
+        info_lines.append(f"\nWarning: Could not analyze file content: {e}")
+    
+    return "\n".join(info_lines)
+
+
+
+
 
 @mcp.tool()
 def directory_tree(path: str, max_depth: int = 4, exclude_dirs: Optional[List[str]] = None) -> str:
@@ -651,7 +658,7 @@ def propose_and_review(path: str, new_string: str, old_string: str = "", expecte
 
     Example `edits` value (list of dicts):
     [
-      {"old_string": "def foo():\\n    return 1", "new_string": "def foo():\\n    return 2"},
+      {"old_string": "def foo():\n    return 1", "new_string": "def foo():\n    return 2"},
       {"old_string": "x = 10", "new_string": "x = 20"}
     ]
 
@@ -694,7 +701,7 @@ def commit_review(session_path: str, original_path: str) -> str:
     if not future_file.exists():
         raise FileNotFoundError(f"Approved file not found in session: {future_file}")
     approved_content = future_file.read_text(encoding='utf-8')
-    final_content = approved_content.rstrip('\\n')
+    final_content = approved_content.rstrip('\n')
     try:
         original_file.write_text(final_content, encoding='utf-8')
     except Exception as e:
@@ -786,7 +793,7 @@ def grep_content(pattern: str, search_path: str = '.', case_insensitive: bool = 
     elif section_patterns: # Not an empty list
         active_patterns = section_patterns
 
-    for line in result.stdout.strip().split('\\n'):
+    for line in result.stdout.strip().split('\n'):
         try:
             message = json.loads(line)
             if message['type'] == 'match':
@@ -821,7 +828,7 @@ def grep_content(pattern: str, search_path: str = '.', case_insensitive: bool = 
                         # If hint generation fails for any reason, just don't add it.
                         pass
 
-                output_lines.append(f"File: {path_str}, Line: {line_number}{hint}\\n---\\n{text.strip()}\\n---")
+                output_lines.append(f"File: {path_str}, Line: {line_number}{hint}\n---\n{text.strip()}\n---")
         except (json.JSONDecodeError, KeyError):
             # Ignore non-match lines or lines with unexpected structure
             continue
@@ -829,7 +836,7 @@ def grep_content(pattern: str, search_path: str = '.', case_insensitive: bool = 
     if not matches_found:
         return "No matches found."
 
-    return "\\n\\n".join(output_lines)
+    return "\n\n".join(output_lines)
 
 
 
@@ -906,11 +913,11 @@ def query_json(file_path: str, jq_expression: str, timeout: int = 30) -> str:
         if not output or output == 'null':
             return "No results found."
 
-        lines = output.split('\\n')
+        lines = output.split('\n')
 
         if len(lines) > 100:
-            truncated_output = "\\n".join(lines[:100])
-            return f"{truncated_output}\\n\\n--- Truncated. Showing 100 of {len(lines)} results. ---\\nRefine your query or use jq slicing: .items[100:200]"
+            truncated_output = "\n".join(lines[:100])
+            return f"{truncated_output}\n\n--- Truncated. Showing 100 of {len(lines)} results. ---\nRefine your query or use jq slicing: .items[100:200]"
 
         return output
     finally:
@@ -994,11 +1001,11 @@ def query_yaml(file_path: str, yq_expression: str, timeout: int = 30) -> str:
         if not output or output == 'null':
             return "No results found."
 
-        lines = output.split('\\n')
+        lines = output.split('\n')
 
         if len(lines) > 100:
-            truncated_output = "\\n".join(lines[:100])
-            return f"{truncated_output}\\n\\n--- Truncated. Showing 100 of {len(lines)} results. ---\\nRefine your query or use yq slicing: .items[100:200]"
+            truncated_output = "\n".join(lines[:100])
+            return f"{truncated_output}\n\n--- Truncated. Showing 100 of {len(lines)} results. ---\nRefine your query or use yq slicing: .items[100:200]"
 
         return output
     finally:
@@ -1024,7 +1031,7 @@ def append_text(path: str, content: str) -> str:
     with open(p, 'a', encoding='utf-8') as f:
         # Check if we need a leading newline
         if p.exists() and p.stat().st_size > 0:
-            f.write("\\n")
+            f.write("\n")
         f.write(content)
         
     return f"Successfully appended content to '{path}'."

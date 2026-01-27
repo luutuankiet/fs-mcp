@@ -12,7 +12,7 @@
 One-command remote agent access. `uvx fs-mcp` on any server → agents can read, write, and explore the codebase immediately. No SSH tunnels, no environment setup.
 
 **Current Focus:**
-Add jq and yq for querying large json and yaml files.
+Project goals for this milestone are complete.
 
 **Why Now:**
 Agents exploring large structured files that would overflow agent context windows. The grep → query pattern is more token-efficient.
@@ -24,17 +24,17 @@ Complete query tool implementation with bounded output, agent workflow guidance,
 
 ## Current Position
 
-**Milestone Status:** Phase 4 in progress
+**Milestone Status:** Phase 4 complete
 
 **Active Phase:** Phase 4: Add jq and yq for querying large json and yaml files
 
 **Progress:**
-- Phase 4, plan 1 complete.
-- Next step: Execute Plan 2 of Phase 4.
+- Phase 4, plan 2 complete.
+- This milestone is complete.
 
 **Progress Bar:**
 ```
-[█████████░] 83% (5/6 plans complete)
+[██████████] 100% (6/6 plans complete)
 ```
 
 ---
@@ -46,7 +46,7 @@ Complete query tool implementation with bounded output, agent workflow guidance,
 - Phase 1: Ripgrep Integration & Core Grep Tool (13 requirements) - **Complete**
 - Phase 2: Agent Workflow Optimization (3 requirements) - **Complete**
 - Phase 3: Production Polish & Cleanup (1 requirement) - **Complete**
-- Phase 4: Add jq and yq for querying large json and yaml files - **In Progress**
+- Phase 4: Add jq and yq for querying large json and yaml files - **Complete**
 - 100% requirement coverage
 
 **REQUIREMENTS.md**
@@ -69,6 +69,8 @@ Complete query tool implementation with bounded output, agent workflow guidance,
 7. **Agent Simulation:** Simulated planner and checker agents during orchestration tasks where an executor agent cannot spawn other agents.
 8. **Follow ripgrep pattern for jq/yq:** To maintain consistency for checking external CLI dependencies.
 9. **Use a virtual environment for dependencies:** To resolve dependency conflicts and isolate the project environment.
+10. **Follow ripgrep pattern for subprocess execution:** For consistency in error handling and result limiting.
+11. **Make large file check in `read_files` opt-out:** To prevent accidental context overflows by agents.
 
 ### Implementation Notes
 
@@ -102,11 +104,11 @@ None currently.
 
 ## Session Continuity
 
-**Last Activity:** 2026-01-27 - Phase 4, Plan 1 execution complete
+**Last Activity:** 2026-01-27 - Phase 4, Plan 2 execution complete
 
 **What's Next:**
-Execute Plan 2 of Phase 4.
+This milestone is complete.
 
 ---
 
-**Last Updated:** 2026-01-27 (after 04-01 plan execution)
+**Last Updated:** 2026-01-27 (after 04-02 plan execution)

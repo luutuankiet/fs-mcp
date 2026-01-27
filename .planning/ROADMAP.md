@@ -158,7 +158,7 @@ This urgent insertion addresses limitations discovered during Phase 4 execution.
 
 Plans:
 - [x] 05-1-PLAN.md — Enhance read_files for section-aware reading.
-- [ ] 05-2-PLAN.md — Enhance grep_content with section end hints.
+- [x] 05-2-PLAN.md — Enhance grep_content with section end hints.
 
 **Details:**
 This phase enhances the `read_files` tool to read from a starting line to a regex pattern and enhances `grep_content` to provide hints for where sections might end, completing the "grep -> read section" workflow.

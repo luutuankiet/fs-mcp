@@ -28,11 +28,11 @@ Complete query tool implementation with bounded output, agent workflow guidance,
 
 **Active Phase:** Phase 5 - enhance Section-Aware Reading
 **Progress:**
-- Phase 5 Plan 2 complete (enhance grep_content with section end hints)
+- Phase 5 Plan 1 complete (enhance read_files for section-aware reading)
 
 **Progress Bar:**
 ```
-[██████████████████████████████████████████] 100% (Phase 5 plan 2 complete)
+[████████████████████████████████████████] 88% (Phase 5 plan 1 complete)
 ```
 
 ---
@@ -75,6 +75,9 @@ Complete query tool implementation with bounded output, agent workflow guidance,
 13. **Use default section patterns for `grep_content` hinting:** Provide immediate utility without agent configuration.
 14. **Make `grep_content` hint generation skippable:** Allow agents to pass `[]` to disable the feature.
 15. **Suppress hint generation errors:** Prevent the enhancement from ever breaking core `grep_content` functionality.
+16. **Use `itertools.islice` for efficient file slicing:** Ensures memory-safe reading of file sections.
+17. **Return structured errors for invalid `read_files` parameters:** Helps agents self-correct on invalid input combinations.
+18. **Read to EOF if `read_to_next_pattern` is not found:** Provides predictable behavior for agents when a pattern is missing.
 
 ### Implementation Notes
 
@@ -110,10 +113,10 @@ None currently.
 
 ## Session Continuity
 
-**Last Activity:** 2026-01-27 - Phase 5, Plan 2 execution complete
+**Last Activity:** 2026-01-27 - Phase 5, Plan 1 execution complete
 
 **What's Next:**
-Phase 5 is in progress. Plan 1, enhancing `read_files` for section-aware reading, is the remaining plan for this phase.
+Phase 5 is in progress. Plan 2, enhancing `grep_content` with section end hints, is the remaining plan for this phase.
 
 ---
 

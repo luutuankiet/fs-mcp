@@ -665,15 +665,25 @@ def grep_content(pattern: str, search_path: str = '.', case_insensitive: bool = 
     1.  **`grep_content`**: Use this tool with a specific pattern to find *which files* are relevant and *where* in those files the relevant code is (line numbers). Its primary purpose is to **locate file paths and line numbers**, not to read full file contents.
     2.  **`read_files`**: Use the file path and line numbers from the output of this tool to perform a targeted read of only the relevant file sections.
 
+    **Section End Hinting:**
+    This tool can optionally provide a `section_end_hint`, which is a suggested line number for the end of the logical block (e.g., function, class, markdown section) containing the match. This helps in reading the full context of a match without manual searching.
+
+    The `section_patterns` parameter controls this behavior:
+    - `None` (default): Uses a default set of patterns to find section boundaries (e.g., markdown headers).
+    - `[]` (empty list): Disables hint generation completely.
+    - `["^def ", "^class "]`: Provides a custom list of regex patterns to identify the start of the *next* section.
+
+    The hint is returned in the format: `File: ..., Line: ... | section_end_hint: <line_number>`
+
     **Example:**
     ```
-    # Step 1: Find where 'FastMCP' is defined.
+    # Step 1: Find where 'FastMCP' is defined, with default hinting.
     grep_content(pattern="class FastMCP")
 
-    # Output might be: File: src/fs_mcp/server.py, Line: 20
-
-    # Step 2: Read the relevant section of that file.
-    read_files([{"path": "src/fs_mcp/server.py", "start_line": 15, "end_line": 25}])
+    # Output might be: File: src/fs_mcp/server.py, Line: 23 | section_end_hint: 44
+    
+    # Step 2: Read the entire class definition using the hint.
+    read_files([{"path": "src/fs_mcp/server.py", "start_line": 23, "end_line": 44}])
     ```
     """
     if not IS_RIPGREP_AVAILABLE:

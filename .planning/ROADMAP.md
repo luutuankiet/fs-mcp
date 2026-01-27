@@ -121,6 +121,34 @@ Plans:
 
 ---
 
+### Phase 4.1: Enhance jq and yq to handle complex multiline queries request (INSERTED)
+
+**Goal:** Handle complex multiline jq/yq expressions without escaping issues, improving agent experience with advanced queries.
+
+**Dependencies:** Phase 4
+
+**Plans:** 1 plan
+
+Plans:
+- [x] 04-1-01-PLAN.md — Enhance query_json and query_yaml to use temp file approach
+
+**Success Criteria:**
+
+1. query_json and query_yaml use temp file approach (jq -f, yq -f) eliminating command-line escaping issues.
+
+2. Agents can send multiline queries with comments, nested functions, and special characters without errors.
+
+3. Complex queries like the dbt lineage traversal example execute successfully.
+
+4. Temp files are properly created, used, and cleaned up after execution.
+
+5. Error messages include helpful context and line numbers for syntax errors.
+
+**Details:**
+This urgent insertion addresses limitations discovered during Phase 4 execution. Agents need to execute complex queries that span multiple lines or contain special characters that are difficult to escape in command-line arguments.
+
+---
+
 ## Requirement Mapping
 
 | Requirement | Phase | Category |
@@ -155,8 +183,9 @@ Plans:
 | Phase 2 | Complete | Workflow optimization | 4/4 | Agent guidance: improved tool descriptions, weak agent validation |
 | Phase 3 | Pending | Production polish | 0/4 | Cleanup: remove placeholder, documentation, observability |
 | Phase 4 | Complete | Add jq and yq for querying large json and yaml files | 5/5 | Structured data query tools with bounded output |
+| Phase 4.1 | Complete | Enhance jq and yq to handle complex multiline queries request | 5/5 | INSERTED - Urgent: Handle complex multiline expressions |
 
 ---
 
-**Last Updated:** 2026-01-26
-**Roadmap Status:** Awaiting user approval
+**Last Updated:** 2026-01-27
+**Roadmap Status:** Phase 4.1 complete

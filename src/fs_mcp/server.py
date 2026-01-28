@@ -214,16 +214,20 @@ def read_files(files: List[FileReadRequest], large_file_passthrough: bool = Fals
                 if file_ext in ['.json', '.yaml', '.yml']:
                     file_size = os.path.getsize(path_obj)
                     tokens = file_size / 4  # Approximate token count
-                    if tokens > 100_000:
-                        file_type = "JSON" if file_ext == '.json' else "YAML"
-                        query_tool = "query_json" if file_type == "JSON" else "query_yaml"
+                    if tokens > 5000:
+                        query_tool = "n/a ignore this line"
+                        file_type = "n/a ignore this line"
+                        if file_ext in ['.json','.yaml', '.yml']:
+                            file_type = "JSON" if file_ext == '.json' else "YAML"
+                            query_tool = "query_json" if file_type == "JSON" else "query_yaml"
                         error_message = (
                             f"Error: {file_request.path} is a large {file_type} file (~{tokens:,.0f} tokens).\n\n"
-                            f"Reading the entire file may overflow your context window. Consider using:\n"
+                            f"Reading the entire file may overflow your context window. Consider using these if the file is json / yaml:\n"
                             f"- {query_tool}(\"{file_request.path}\", \"keys\") to explore structure\n"
                             f"- {query_tool}(\"{file_request.path}\", \".items[0:10]\") to preview data\n"
                             f"- {query_tool}(\"{file_request.path}\", \".items[] | select(.field == 'value')\") to filter\n\n"
-                            f"Or set large_file_passthrough=True to read anyway."
+                            f"- Or use grep_content to explore the file structure"
+                            f"- As a last resort, set large_file_passthrough=True to read anyway."
                         )
                         results.append(f"File: {file_request.path}\n{error_message}")
                         continue
@@ -435,7 +439,7 @@ def _calculate_adaptive_chunk_size(estimated_tokens: int, line_count: int, p: Pa
     Strategy: Start small for sampling, then scale up adaptively.
     """
     # Target: Keep each chunk under 30k tokens to leave room for context
-    TARGET_TOKENS_PER_CHUNK = 30_000
+    TARGET_TOKENS_PER_CHUNK = 5000
     SAFE_FIRST_SAMPLE = 50  # lines
     
     if estimated_tokens <= TARGET_TOKENS_PER_CHUNK:

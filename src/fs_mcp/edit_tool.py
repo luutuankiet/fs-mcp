@@ -84,6 +84,54 @@ async def propose_and_review_logic(
                 raise ValueError(f"Edit at index {i} must have 'old_string' and 'new_string' keys.")
         edit_pairs = edits
 
+    # --- Validation: Prevent accidental file overwrite ---
+    # If old_string is blank but file has content, require explicit OVERWRITE_FILE sentinel
+    OVERWRITE_SENTINEL = "OVERWRITE_FILE"
+    OLD_STRING_MAX_LENGTH = 500
+
+    # Get all old_strings to validate (from edits or single old_string)
+    old_strings_to_validate = []
+    if edit_pairs:
+        old_strings_to_validate = [pair['old_string'] for pair in edit_pairs]
+    else:
+        old_strings_to_validate = [old_string]
+
+    # Check for blank old_string on non-blank files
+    for idx, os_val in enumerate(old_strings_to_validate):
+        if os_val == "" or (os_val is not None and os_val.strip() == ""):
+            # old_string is blank - check if file exists and has content
+            p = validate_path(path)
+            if p.exists():
+                file_content = p.read_text(encoding='utf-8')
+                if file_content.strip() != "":
+                    # File is not blank - reject unless user explicitly wants to overwrite
+                    error_msg = (
+                        "WARN: you are trying to overwrite a file, which could be a mistake if you are not aware of the file content. "
+                        "Either use grep_text + read_files to do surgical update if this is a mistake, "
+                        f"or pass in old_string this exact string '{OVERWRITE_SENTINEL}' if the user agrees to overwrite."
+                    )
+                    if edit_pairs:
+                        error_msg = f"Edit {idx}: {error_msg}"
+                    raise ValueError(error_msg)
+        elif os_val == OVERWRITE_SENTINEL:
+            # User explicitly wants to overwrite - convert sentinel to empty string for processing
+            if edit_pairs:
+                edit_pairs[idx]['old_string'] = ""
+            else:
+                old_string = ""
+
+    # Check for old_string that is too long (>500 characters)
+    for idx, os_val in enumerate(old_strings_to_validate):
+        if os_val and os_val != OVERWRITE_SENTINEL and len(os_val) > OLD_STRING_MAX_LENGTH:
+            error_msg = (
+                "ERROR: old_string is too long and brittle which does not follow best practice. "
+                "You might be over eager proposing changes to parts that do not need change at all. "
+                "Consider do send the list of surgical edits instead of doing a big re write."
+            )
+            if edit_pairs:
+                error_msg = f"Edit {idx}: {error_msg}"
+            raise ValueError(error_msg)
+
     # --- GSD-Lite Auto-Approve ---
     if 'gsd-lite' in Path(path).parts:
         tool = RooStyleEditTool(validate_path)

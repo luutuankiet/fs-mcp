@@ -1,34 +1,55 @@
 import json
 import re
 import itertools
-from pydantic import BaseModel
-from typing import Optional
-
-class FileReadRequest(BaseModel):
-    path: str
-    head: Optional[int] = None
-    tail: Optional[int] = None
-    start_line: Optional[int] = None
-    end_line: Optional[int] = None
-    read_to_next_pattern: Optional[str] = None
-
-
 import os
 import base64
 import mimetypes
 import fnmatch
 from pathlib import Path
-from typing import List, Optional, Literal, Dict
+from typing import List, Optional, Literal, Dict, Annotated
 from datetime import datetime
+from dataclasses import dataclass
+from pydantic import BaseModel, Field
 from fastmcp import FastMCP
 import tempfile
 import time
 import shutil
 import subprocess
 
-from dataclasses import dataclass
-from .edit_tool import EditResult, RooStyleEditTool, propose_and_review_logic
+from .edit_tool import EditResult, RooStyleEditTool, propose_and_review_logic, OLD_STRING_MAX_LENGTH
 from .utils import check_ripgrep, check_jq, check_yq
+
+# --- Token threshold for large file warnings (conservative to enforce grep->read workflow) ---
+LARGE_FILE_TOKEN_THRESHOLD = 2000
+
+# --- Dynamic Field Descriptions (using imported constants) ---
+OLD_STRING_DESCRIPTION = f"The text to find and replace. HARD LIMIT: Must be under {OLD_STRING_MAX_LENGTH} characters - the tool will REJECT old_string over this limit. BEST PRACTICE: Keep minimal - only the lines that change plus 1-2 lines of surrounding context for uniqueness. If your change spans more text, use the 'edits' parameter to break into multiple small old_string/new_string pairs, each under {OLD_STRING_MAX_LENGTH} chars. Leave empty for full file rewrites (new files or OVERWRITE_FILE sentinel for existing files). When continuing after 'REVIEW' feedback, this MUST match user's edited content character-for-character."
+
+EDITS_DESCRIPTION = f"List of edit operations for batch changes (multi-patch mode). PREFERRED for multiple changes: each edit is {{old_string, new_string}} where each old_string must be under {OLD_STRING_MAX_LENGTH} chars and unique. All patches applied sequentially as one combined diff. Use this to break down large changes into smaller surgical edits that stay under the {OLD_STRING_MAX_LENGTH}-char limit."
+
+EDIT_PAIR_OLD_STRING_DESCRIPTION = f"The text to find and replace. MUST be under {OLD_STRING_MAX_LENGTH} characters (hard limit). MUST be unique in the file. Keep minimal: only the lines that change plus 1-2 lines of context for uniqueness."
+
+LARGE_FILE_PASSTHROUGH_DESCRIPTION = f"If False (default), blocks reading large JSON/YAML files (>{LARGE_FILE_TOKEN_THRESHOLD} tokens) and suggests using query_json/query_yaml instead. Set to True to bypass this safety check. WORKFLOW: Use grep_content first to understand structure, then read_files for targeted sections."
+
+# --- Pydantic Models for Tool Arguments ---
+
+class FileReadRequest(BaseModel):
+    """A request to read a file with various reading modes. Modes are mutually exclusive."""
+    path: str = Field(description="The path to the file to read. Prefer relative paths.")
+    head: Optional[int] = Field(default=None, description="Number of lines to read from the beginning of the file. Cannot be mixed with start_line/end_line.")
+    tail: Optional[int] = Field(default=None, description="Number of lines to read from the end of the file. Cannot be mixed with start_line/end_line.")
+    start_line: Optional[int] = Field(default=None, description="The 1-based line number to start reading from. Use with end_line for a range, or with read_to_next_pattern for section-aware reading.")
+    end_line: Optional[int] = Field(default=None, description="The 1-based line number to stop reading at (inclusive). Cannot be used with read_to_next_pattern.")
+    read_to_next_pattern: Optional[str] = Field(
+        default=None,
+        description="A regex pattern for section-aware reading. Reads from start_line until a line matching this pattern is found (exclusive). Useful for reading entire functions/classes. REQUIRES start_line. Cannot be used with end_line."
+    )
+
+
+class EditPair(BaseModel):
+    """A single edit operation with old and new string for batch editing."""
+    old_string: str = Field(description=EDIT_PAIR_OLD_STRING_DESCRIPTION)
+    new_string: str = Field(description="The replacement text that will replace old_string.")
 
 
 # --- Global Configuration ---
@@ -156,7 +177,16 @@ def list_allowed_directories() -> str:
     return "\n".join(str(d) for d in USER_ACCESSIBLE_DIRS)
 
 @mcp.tool()
-def read_files(files: List[FileReadRequest], large_file_passthrough: bool = False) -> str:
+def read_files(
+    files: Annotated[
+        List[FileReadRequest],
+        Field(description="A list of file read requests. WORKFLOW: Use grep_content FIRST to find line numbers and section boundaries, then use read_files for targeted reading of only the relevant sections. This preserves context. Reading modes: full file (path only), head/tail (first/last N lines), line range (start_line/end_line), or section-aware (start_line + read_to_next_pattern for reading until next function/class).")
+    ],
+    large_file_passthrough: Annotated[
+        bool,
+        Field(default=False, description=LARGE_FILE_PASSTHROUGH_DESCRIPTION)
+    ] = False
+) -> str:
     """
     Read the contents of multiple files simultaneously.
     Returns path and content separated by dashes.
@@ -173,7 +203,7 @@ def read_files(files: List[FileReadRequest], large_file_passthrough: bool = Fals
     ```
     read_files([{
         "path": "src/fs_mcp/server.py",
-        "start_line": 90, 
+        "start_line": 90,
         "read_to_next_pattern": "^def "
     }])
     ```
@@ -187,16 +217,6 @@ def read_files(files: List[FileReadRequest], large_file_passthrough: bool = Fals
     This tool is the second step in the efficient "grep -> read" workflow. After using `grep_content`
     to find relevant files and line numbers, use this tool to perform a targeted read of only
     those specific sections.
-    
-    Args:
-        files: A list of file read requests, each a dictionary that can contain:
-            path (str): The path to the file.
-            head (int, optional): The number of lines to read from the beginning.
-            tail (int, optional): The number of lines to read from the end.
-            start_line (int, optional): The 1-based line number to start reading from.
-            end_line (int, optional): The 1-based line number to stop reading at (inclusive).
-            read_to_next_pattern (str, optional): A regex pattern. Reads from `start_line` until a line matching the pattern is found (exclusive). Requires `start_line`.
-        large_file_passthrough: If False (default), blocks reading JSON/YAML files >100k tokens and suggests using query_json/query_yaml instead. Set to True to read anyway.
     """
     results = []
     for file_request_data in files:
@@ -229,13 +249,13 @@ def read_files(files: List[FileReadRequest], large_file_passthrough: bool = Fals
                 results.append(f"File: {file_request.path}\n{error_message}")
                 continue
 
-            # Large file check for JSON/YAML
+            # Large file check for JSON/YAML - conservative threshold to enforce grep->read workflow
             if not large_file_passthrough and path_obj.exists() and not path_obj.is_dir():
                 file_ext = path_obj.suffix.lower()
                 if file_ext in ['.json', '.yaml', '.yml']:
                     file_size = os.path.getsize(path_obj)
-                    tokens = file_size / 4  # Approximate token count
-                    if tokens > 5000:
+                    tokens = file_size / 4  # Approximate token count (4 chars per token)
+                    if tokens > LARGE_FILE_TOKEN_THRESHOLD:
                         query_tool = "n/a ignore this line"
                         file_type = "n/a ignore this line"
                         if file_ext in ['.json','.yaml', '.yml']:
@@ -643,7 +663,32 @@ APPROVAL_KEYWORD = "##APPROVE##"
 
 
 @mcp.tool()
-async def propose_and_review(path: str, new_string: str, old_string: str = "", expected_replacements: int = 1, session_path: Optional[str] = None, edits: Optional[list] = None) -> str:
+async def propose_and_review(
+    path: Annotated[
+        str,
+        Field(description="The path to the file being edited. Required for ALL intents (new session or continuation). Prefer relative paths.")
+    ],
+    new_string: Annotated[
+        str,
+        Field(description="The replacement text or new content to propose. For patches, this replaces old_string. For full rewrites (old_string empty), this becomes the entire file content.")
+    ],
+    old_string: Annotated[
+        str,
+        Field(default="", description=OLD_STRING_DESCRIPTION)
+    ] = "",
+    expected_replacements: Annotated[
+        int,
+        Field(default=1, description="Expected number of times old_string appears in the file. Default is 1. The tool validates this count before applying the edit.")
+    ] = 1,
+    session_path: Annotated[
+        Optional[str],
+        Field(default=None, description="Path to an existing review session directory (returned from previous call as 'session_path' in JSON response). Provide this to CONTINUE a review session after user feedback. When user_action was 'REVIEW', you must reconstruct the current state from user_feedback_diff before providing old_string.")
+    ] = None,
+    edits: Annotated[
+        Optional[List[EditPair]],
+        Field(default=None, description=EDITS_DESCRIPTION)
+    ] = None
+) -> str:
     """
     Starts or continues an interactive review session using a VS Code diff view. This smart tool adapts its behavior based on the arguments provided.
 
@@ -724,7 +769,28 @@ def grounding_search(query: str) -> str:
 
 
 @mcp.tool()
-def grep_content(pattern: str, search_path: str = '.', case_insensitive: bool = False, context_lines: int = 2, section_patterns: Optional[List[str]] = None) -> str:
+def grep_content(
+    pattern: Annotated[
+        str,
+        Field(description="The regex pattern to search for in file contents. WORKFLOW: Use grep_content FIRST to locate files and line numbers, then read_files for targeted reading. This preserves context by avoiding full file reads. Output includes 'section end hint' to show where functions/classes end.")
+    ],
+    search_path: Annotated[
+        str,
+        Field(default='.', description="The directory or file to search in. Defaults to current directory. Prefer relative paths.")
+    ] = '.',
+    case_insensitive: Annotated[
+        bool,
+        Field(default=False, description="If True, perform case-insensitive matching (rg -i flag).")
+    ] = False,
+    context_lines: Annotated[
+        int,
+        Field(default=2, description="Number of lines of context to show before and after each match (rg --context flag).")
+    ] = 2,
+    section_patterns: Annotated[
+        Optional[List[str]],
+        Field(default=None, description="Regex patterns for section boundary detection to generate 'section end hint' metadata. Default: Python patterns ['^def ', '^class ']. Custom: provide your own patterns. Disable: pass empty list []. Use the hint to know exactly which lines to read with read_files.")
+    ] = None
+) -> str:
     """
     Search for a pattern in file contents using ripgrep.
 
@@ -747,7 +813,7 @@ def grep_content(pattern: str, search_path: str = '.', case_insensitive: bool = 
     # Step 2: Read the relevant section of that file.
     read_files([{"path": "src/fs_mcp/server.py", "start_line": 20, "end_line": 42}])
     ```
-    
+
     **Section End Hinting:**
     - The tool can optionally provide a `section_end_hint` to suggest where a logical block (like a function or class) ends.
     - This is enabled by default with patterns for Python (`def`, `class`).
@@ -849,7 +915,20 @@ def grep_content(pattern: str, search_path: str = '.', case_insensitive: bool = 
 
 
 @mcp.tool()
-def query_json(file_path: str, jq_expression: str, timeout: int = 30) -> str:
+def query_json(
+    file_path: Annotated[
+        str,
+        Field(description="Path to the JSON file to query. Supports relative or absolute paths.")
+    ],
+    jq_expression: Annotated[
+        str,
+        Field(description="The jq query expression. Examples: '.field_name' (get field), '.items[]' (iterate array), '.items[] | select(.active == true)' (filter), '.items | length' (count). See https://jqlang.github.io/jq/manual/")
+    ],
+    timeout: Annotated[
+        int,
+        Field(default=30, description="Query timeout in seconds. Default is 30. Increase for complex queries on large files.")
+    ] = 30
+) -> str:
     """
     Query a JSON file using jq expressions. Use this to efficiently explore large JSON files
     without reading the entire content into memory.
@@ -875,14 +954,6 @@ def query_json(file_path: str, jq_expression: str, timeout: int = 30) -> str:
     4. Filter specific: query_json("data.json", ".items[] | select(.status == 'active')")
 
     **Result Limit:** Returns first 100 results. For more, use slicing: .items[100:200]
-
-    Args:
-        file_path: Path to JSON file (relative or absolute)
-        jq_expression: jq query expression (see https://jqlang.github.io/jq/manual/)
-        timeout: Query timeout in seconds (default: 30)
-
-    Returns:
-        Compact JSON results (one per line), or error message
     """
     if not IS_JQ_AVAILABLE:
         _, msg = check_jq()
@@ -938,7 +1009,20 @@ def query_json(file_path: str, jq_expression: str, timeout: int = 30) -> str:
 
 
 @mcp.tool()
-def query_yaml(file_path: str, yq_expression: str, timeout: int = 30) -> str:
+def query_yaml(
+    file_path: Annotated[
+        str,
+        Field(description="Path to the YAML file to query. Supports relative or absolute paths.")
+    ],
+    yq_expression: Annotated[
+        str,
+        Field(description="The yq query expression (jq-like syntax). Examples: '.field_name' (get field), '.items[]' (iterate array), '.items[] | select(.active == true)' (filter), '.items | length' (count). See mikefarah.gitbook.io/yq")
+    ],
+    timeout: Annotated[
+        int,
+        Field(default=30, description="Query timeout in seconds. Default is 30. Increase for complex queries on large files.")
+    ] = 30
+) -> str:
     """
     Query a YAML file using yq expressions (mikefarah/yq with jq-like syntax). Use this to efficiently explore large YAML files without reading the entire content into memory.
 
@@ -963,14 +1047,6 @@ def query_yaml(file_path: str, yq_expression: str, timeout: int = 30) -> str:
     4. Filter specific: query_yaml("config.yaml", ".services[] | select(.enabled == true)")
 
     **Result Limit:** Returns first 100 results. For more, use slicing: .items[100:200]
-
-    Args:
-        file_path: Path to YAML file (relative or absolute)
-        yq_expression: yq query expression (jq-like syntax, see mikefarah.gitbook.io/yq)
-        timeout: Query timeout in seconds (default: 30)
-
-    Returns:
-        Compact JSON results (one per line), or error message
     """
     if not IS_YQ_AVAILABLE:
         _, msg = check_yq()

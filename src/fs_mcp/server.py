@@ -661,10 +661,13 @@ def grep_content(pattern: str, search_path: str = '.', case_insensitive: bool = 
     Search for a pattern in file contents using ripgrep.
 
     **Workflow:**
-    This tool is the first step in a two-step "grep -> read" workflow.
+    Mandatory File Interaction Protocol: The "Grep -> Hint -> Read" Workflow
 
     1.  **`grep_content`**: Use this tool with a specific pattern to find *which files* are relevant and *where* in those files the relevant code is (line numbers). Its primary purpose is to **locate file paths and line numbers**, not to read full file contents.
-    2.  **`read_files`**: Use the file path and line numbers from the output of this tool to perform a targeted read of only the relevant file sections.
+    2.  Hint: Critically inspect the grep output for the (section end hint: ...) metadata. This hint defines the full boundary of the relevant content.
+    3.  **`read_files`**: Use the file path and line numbers from the output of this tool to perform a targeted read of only the relevant file sections.
+    4.  NEVER assume a single grep match represents the full context. The purpose of this protocol is to replace assumption with evidence.
+
 
     **Example:**
     ```

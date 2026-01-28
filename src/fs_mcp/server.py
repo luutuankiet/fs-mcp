@@ -571,7 +571,7 @@ APPROVAL_KEYWORD = "##APPROVE##"
 
 
 @mcp.tool()
-def propose_and_review(path: str, new_string: str, old_string: str = "", expected_replacements: int = 1, session_path: Optional[str] = None, edits: Optional[list] = None) -> str:
+async def propose_and_review(path: str, new_string: str, old_string: str = "", expected_replacements: int = 1, session_path: Optional[str] = None, edits: Optional[list] = None) -> str:
     """
     Starts or continues an interactive review session using a VS Code diff view. This smart tool adapts its behavior based on the arguments provided.
 
@@ -611,7 +611,7 @@ def propose_and_review(path: str, new_string: str, old_string: str = "", expecte
 
     It blocks and waits for the user to save the file, then returns their action ('APPROVE' or 'REVIEW').
     """
-    return propose_and_review_logic(
+    return await propose_and_review_logic(
         validate_path,
         IS_VSCODE_CLI_AVAILABLE,
         path,

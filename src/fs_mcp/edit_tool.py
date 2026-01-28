@@ -9,6 +9,10 @@ import tempfile
 import time
 from pathlib import Path
 
+# --- Configuration Constants ---
+OLD_STRING_MAX_LENGTH = 2000
+OVERWRITE_SENTINEL = "OVERWRITE_FILE"
+
 # The new structure for returning detailed results from the edit tool.
 @dataclass
 class EditResult:
@@ -86,8 +90,7 @@ async def propose_and_review_logic(
 
     # --- Validation: Prevent accidental file overwrite ---
     # If old_string is blank but file has content, require explicit OVERWRITE_FILE sentinel
-    OVERWRITE_SENTINEL = "OVERWRITE_FILE"
-    OLD_STRING_MAX_LENGTH = 2000
+    # Note: OVERWRITE_SENTINEL and OLD_STRING_MAX_LENGTH are module-level constants
 
     # Get all old_strings to validate (from edits or single old_string)
     old_strings_to_validate = []

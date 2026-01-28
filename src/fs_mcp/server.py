@@ -1,8 +1,37 @@
 import json
 import re
 import itertools
+import os
+import base64
+import mimetypes
+import fnmatch
+from pathlib import Path
+from typing import List, Optional, Literal, Dict, Annotated
+from datetime import datetime
+from dataclasses import dataclass
 from pydantic import BaseModel, Field
-from typing import Optional, Annotated
+from fastmcp import FastMCP
+import tempfile
+import time
+import shutil
+import subprocess
+
+from .edit_tool import EditResult, RooStyleEditTool, propose_and_review_logic, OLD_STRING_MAX_LENGTH
+from .utils import check_ripgrep, check_jq, check_yq
+
+# --- Token threshold for large file warnings (conservative to enforce grep->read workflow) ---
+LARGE_FILE_TOKEN_THRESHOLD = 2000
+
+# --- Dynamic Field Descriptions (using imported constants) ---
+OLD_STRING_DESCRIPTION = f"The text to find and replace. HARD LIMIT: Must be under {OLD_STRING_MAX_LENGTH} characters - the tool will REJECT old_string over this limit. BEST PRACTICE: Keep minimal - only the lines that change plus 1-2 lines of surrounding context for uniqueness. If your change spans more text, use the 'edits' parameter to break into multiple small old_string/new_string pairs, each under {OLD_STRING_MAX_LENGTH} chars. Leave empty for full file rewrites (new files or OVERWRITE_FILE sentinel for existing files). When continuing after 'REVIEW' feedback, this MUST match user's edited content character-for-character."
+
+EDITS_DESCRIPTION = f"List of edit operations for batch changes (multi-patch mode). PREFERRED for multiple changes: each edit is {{old_string, new_string}} where each old_string must be under {OLD_STRING_MAX_LENGTH} chars and unique. All patches applied sequentially as one combined diff. Use this to break down large changes into smaller surgical edits that stay under the {OLD_STRING_MAX_LENGTH}-char limit."
+
+EDIT_PAIR_OLD_STRING_DESCRIPTION = f"The text to find and replace. MUST be under {OLD_STRING_MAX_LENGTH} characters (hard limit). MUST be unique in the file. Keep minimal: only the lines that change plus 1-2 lines of context for uniqueness."
+
+LARGE_FILE_PASSTHROUGH_DESCRIPTION = f"If False (default), blocks reading large JSON/YAML files (>{LARGE_FILE_TOKEN_THRESHOLD} tokens) and suggests using query_json/query_yaml instead. Set to True to bypass this safety check. WORKFLOW: Use grep_content first to understand structure, then read_files for targeted sections."
+
+# --- Pydantic Models for Tool Arguments ---
 
 class FileReadRequest(BaseModel):
     """A request to read a file with various reading modes. Modes are mutually exclusive."""
@@ -19,26 +48,8 @@ class FileReadRequest(BaseModel):
 
 class EditPair(BaseModel):
     """A single edit operation with old and new string for batch editing."""
-    old_string: str = Field(description="The text to find and replace. MUST be under 500 characters (hard limit). MUST be unique in the file. Keep minimal: only the lines that change plus 1-2 lines of context for uniqueness.")
+    old_string: str = Field(description=EDIT_PAIR_OLD_STRING_DESCRIPTION)
     new_string: str = Field(description="The replacement text that will replace old_string.")
-
-
-import os
-import base64
-import mimetypes
-import fnmatch
-from pathlib import Path
-from typing import List, Optional, Literal, Dict
-from datetime import datetime
-from fastmcp import FastMCP
-import tempfile
-import time
-import shutil
-import subprocess
-
-from dataclasses import dataclass
-from .edit_tool import EditResult, RooStyleEditTool, propose_and_review_logic
-from .utils import check_ripgrep, check_jq, check_yq
 
 
 # --- Global Configuration ---
@@ -173,7 +184,7 @@ def read_files(
     ],
     large_file_passthrough: Annotated[
         bool,
-        Field(default=False, description="If False (default), blocks reading large JSON/YAML files (>5k tokens) and suggests using query_json/query_yaml instead. Set to True to bypass this safety check and read the full file anyway.")
+        Field(default=False, description=LARGE_FILE_PASSTHROUGH_DESCRIPTION)
     ] = False
 ) -> str:
     """
@@ -238,13 +249,13 @@ def read_files(
                 results.append(f"File: {file_request.path}\n{error_message}")
                 continue
 
-            # Large file check for JSON/YAML
+            # Large file check for JSON/YAML - conservative threshold to enforce grep->read workflow
             if not large_file_passthrough and path_obj.exists() and not path_obj.is_dir():
                 file_ext = path_obj.suffix.lower()
                 if file_ext in ['.json', '.yaml', '.yml']:
                     file_size = os.path.getsize(path_obj)
-                    tokens = file_size / 4  # Approximate token count
-                    if tokens > 5000:
+                    tokens = file_size / 4  # Approximate token count (4 chars per token)
+                    if tokens > LARGE_FILE_TOKEN_THRESHOLD:
                         query_tool = "n/a ignore this line"
                         file_type = "n/a ignore this line"
                         if file_ext in ['.json','.yaml', '.yml']:
@@ -663,7 +674,7 @@ async def propose_and_review(
     ],
     old_string: Annotated[
         str,
-        Field(default="", description="The text to find and replace. HARD LIMIT: Must be under 500 characters - the tool will REJECT old_string over this limit. BEST PRACTICE: Keep minimal - only the lines that change plus 1-2 lines of surrounding context for uniqueness. If your change spans more text, use the 'edits' parameter to break into multiple small old_string/new_string pairs, each under 500 chars. Leave empty for full file rewrites (new files or OVERWRITE_FILE sentinel for existing files). When continuing after 'REVIEW' feedback, this MUST match user's edited content character-for-character.")
+        Field(default="", description=OLD_STRING_DESCRIPTION)
     ] = "",
     expected_replacements: Annotated[
         int,
@@ -675,7 +686,7 @@ async def propose_and_review(
     ] = None,
     edits: Annotated[
         Optional[List[EditPair]],
-        Field(default=None, description="List of edit operations for batch changes (multi-patch mode). PREFERRED for multiple changes: each edit is {old_string, new_string} where each old_string must be under 500 chars and unique. All patches applied sequentially as one combined diff. Use this to break down large changes into smaller surgical edits that stay under the 500-char limit.")
+        Field(default=None, description=EDITS_DESCRIPTION)
     ] = None
 ) -> str:
     """

@@ -19,7 +19,7 @@ class FileReadRequest(BaseModel):
 
 class EditPair(BaseModel):
     """A single edit operation with old and new string for batch editing."""
-    old_string: str = Field(description="The text to find and replace. MUST be unique in the file. Keep minimal: only the lines that change plus 1-2 lines of context for uniqueness.")
+    old_string: str = Field(description="The text to find and replace. MUST be under 500 characters (hard limit). MUST be unique in the file. Keep minimal: only the lines that change plus 1-2 lines of context for uniqueness.")
     new_string: str = Field(description="The replacement text that will replace old_string.")
 
 
@@ -169,7 +169,7 @@ def list_allowed_directories() -> str:
 def read_files(
     files: Annotated[
         List[FileReadRequest],
-        Field(description="A list of file read requests. Each request specifies a path and optional reading mode: full file (path only), head/tail (first/last N lines), line range (start_line/end_line), or section-aware (start_line + read_to_next_pattern). Use with grep_content: grep to find line numbers, then read_files for targeted reading.")
+        Field(description="A list of file read requests. WORKFLOW: Use grep_content FIRST to find line numbers and section boundaries, then use read_files for targeted reading of only the relevant sections. This preserves context. Reading modes: full file (path only), head/tail (first/last N lines), line range (start_line/end_line), or section-aware (start_line + read_to_next_pattern for reading until next function/class).")
     ],
     large_file_passthrough: Annotated[
         bool,
@@ -663,7 +663,7 @@ async def propose_and_review(
     ],
     old_string: Annotated[
         str,
-        Field(default="", description="The text to find and replace. BEST PRACTICE: Keep minimal - only the lines that change plus 1-2 lines of surrounding context for uniqueness. Leave empty for full file rewrites (new files or OVERWRITE_FILE sentinel for existing non-empty files). When continuing a session after 'REVIEW' feedback, this MUST match the user's edited content character-for-character.")
+        Field(default="", description="The text to find and replace. HARD LIMIT: Must be under 500 characters - the tool will REJECT old_string over this limit. BEST PRACTICE: Keep minimal - only the lines that change plus 1-2 lines of surrounding context for uniqueness. If your change spans more text, use the 'edits' parameter to break into multiple small old_string/new_string pairs, each under 500 chars. Leave empty for full file rewrites (new files or OVERWRITE_FILE sentinel for existing files). When continuing after 'REVIEW' feedback, this MUST match user's edited content character-for-character.")
     ] = "",
     expected_replacements: Annotated[
         int,
@@ -675,7 +675,7 @@ async def propose_and_review(
     ] = None,
     edits: Annotated[
         Optional[List[EditPair]],
-        Field(default=None, description="List of edit operations for batch changes (multi-patch mode). Each edit is {old_string, new_string}. All patches applied sequentially as one combined diff. Use this instead of old_string/new_string params when making multiple changes. Each old_string must be unique and minimal.")
+        Field(default=None, description="List of edit operations for batch changes (multi-patch mode). PREFERRED for multiple changes: each edit is {old_string, new_string} where each old_string must be under 500 chars and unique. All patches applied sequentially as one combined diff. Use this to break down large changes into smaller surgical edits that stay under the 500-char limit.")
     ] = None
 ) -> str:
     """
@@ -761,7 +761,7 @@ def grounding_search(query: str) -> str:
 def grep_content(
     pattern: Annotated[
         str,
-        Field(description="The regex pattern to search for in file contents. Use this to LOCATE files and line numbers, then use read_files for targeted reading (grep->read workflow).")
+        Field(description="The regex pattern to search for in file contents. WORKFLOW: Use grep_content FIRST to locate files and line numbers, then read_files for targeted reading. This preserves context by avoiding full file reads. Output includes 'section end hint' to show where functions/classes end.")
     ],
     search_path: Annotated[
         str,
@@ -777,7 +777,7 @@ def grep_content(
     ] = 2,
     section_patterns: Annotated[
         Optional[List[str]],
-        Field(default=None, description="Regex patterns for section boundary detection to generate 'section end hint' metadata. Default: Python patterns ['^def ', '^class ']. Custom: provide your own patterns. Disable: pass empty list []. The hint helps you know where a function/class ends.")
+        Field(default=None, description="Regex patterns for section boundary detection to generate 'section end hint' metadata. Default: Python patterns ['^def ', '^class ']. Custom: provide your own patterns. Disable: pass empty list []. Use the hint to know exactly which lines to read with read_files.")
     ] = None
 ) -> str:
     """

@@ -124,9 +124,9 @@ async def propose_and_review_logic(
     for idx, os_val in enumerate(old_strings_to_validate):
         if os_val and os_val != OVERWRITE_SENTINEL and len(os_val) > OLD_STRING_MAX_LENGTH:
             error_msg = (
-                "ERROR: old_string is too long and brittle which does not follow best practice. "
+                f"ERROR: old_string is too long and brittle (over {OLD_STRING_MAX_LENGTH} characters) which does not follow best practice. "
                 "You might be over eager proposing changes to parts that do not need change at all. "
-                "Consider do send the list of surgical edits instead of doing a big re write."
+                "Consider do send the list of surgical edits with smaller tokens per edit instead of doing a big rewrite."
             )
             if edit_pairs:
                 error_msg = f"Edit {idx}: {error_msg}"

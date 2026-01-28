@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import Optional
+import asyncio
 import difflib
 import json
 import shutil
@@ -63,7 +64,7 @@ class RooStyleEditTool:
         return EditResult(success=True, message="Edit prepared.", original_content=original_content, new_content=new_content)
 
 
-def propose_and_review_logic(
+async def propose_and_review_logic(
     validate_path,
     IS_VSCODE_CLI_AVAILABLE,
     path: str,
@@ -302,7 +303,7 @@ def propose_and_review_logic(
 
     initial_mod_time = future_file_path.stat().st_mtime
     while True:
-        time.sleep(1)
+        await asyncio.sleep(1)
         if future_file_path.stat().st_mtime > initial_mod_time: break
     
     # --- Step 3: Interpret User's Action ---

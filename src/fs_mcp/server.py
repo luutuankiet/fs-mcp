@@ -235,7 +235,7 @@ def read_files(files: List[FileReadRequest], large_file_passthrough: bool = Fals
                 if file_ext in ['.json', '.yaml', '.yml']:
                     file_size = os.path.getsize(path_obj)
                     tokens = file_size / 4  # Approximate token count
-                    if tokens > 5000:
+                    if tokens > 2000:
                         query_tool = "n/a ignore this line"
                         file_type = "n/a ignore this line"
                         if file_ext in ['.json','.yaml', '.yml']:

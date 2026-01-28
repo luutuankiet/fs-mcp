@@ -5,22 +5,22 @@ from pydantic import BaseModel, Field
 from typing import Optional, Annotated
 
 class FileReadRequest(BaseModel):
-    """A request to read a file with various reading modes."""
+    """A request to read a file with various reading modes. Modes are mutually exclusive."""
     path: str = Field(description="The path to the file to read. Prefer relative paths.")
-    head: Optional[int] = Field(default=None, description="Number of lines to read from the beginning of the file.")
-    tail: Optional[int] = Field(default=None, description="Number of lines to read from the end of the file.")
-    start_line: Optional[int] = Field(default=None, description="The 1-based line number to start reading from.")
-    end_line: Optional[int] = Field(default=None, description="The 1-based line number to stop reading at (inclusive).")
+    head: Optional[int] = Field(default=None, description="Number of lines to read from the beginning of the file. Cannot be mixed with start_line/end_line.")
+    tail: Optional[int] = Field(default=None, description="Number of lines to read from the end of the file. Cannot be mixed with start_line/end_line.")
+    start_line: Optional[int] = Field(default=None, description="The 1-based line number to start reading from. Use with end_line for a range, or with read_to_next_pattern for section-aware reading.")
+    end_line: Optional[int] = Field(default=None, description="The 1-based line number to stop reading at (inclusive). Cannot be used with read_to_next_pattern.")
     read_to_next_pattern: Optional[str] = Field(
         default=None,
-        description="A regex pattern. Reads from start_line until a line matching this pattern is found (exclusive). Useful for reading entire functions or classes. Requires start_line."
+        description="A regex pattern for section-aware reading. Reads from start_line until a line matching this pattern is found (exclusive). Useful for reading entire functions/classes. REQUIRES start_line. Cannot be used with end_line."
     )
 
 
 class EditPair(BaseModel):
-    """A single edit operation with old and new string."""
-    old_string: str = Field(description="The text to find and replace. Must be unique in the file or session content.")
-    new_string: str = Field(description="The replacement text.")
+    """A single edit operation with old and new string for batch editing."""
+    old_string: str = Field(description="The text to find and replace. MUST be unique in the file. Keep minimal: only the lines that change plus 1-2 lines of context for uniqueness.")
+    new_string: str = Field(description="The replacement text that will replace old_string.")
 
 
 import os
@@ -169,11 +169,11 @@ def list_allowed_directories() -> str:
 def read_files(
     files: Annotated[
         List[FileReadRequest],
-        Field(description="A list of file read requests. Each request specifies a file path and optional reading parameters (head, tail, start_line, end_line, read_to_next_pattern).")
+        Field(description="A list of file read requests. Each request specifies a path and optional reading mode: full file (path only), head/tail (first/last N lines), line range (start_line/end_line), or section-aware (start_line + read_to_next_pattern). Use with grep_content: grep to find line numbers, then read_files for targeted reading.")
     ],
     large_file_passthrough: Annotated[
         bool,
-        Field(default=False, description="If False (default), blocks reading large JSON/YAML files (>5k tokens) and suggests using query_json/query_yaml instead. Set to True to bypass this check.")
+        Field(default=False, description="If False (default), blocks reading large JSON/YAML files (>5k tokens) and suggests using query_json/query_yaml instead. Set to True to bypass this safety check and read the full file anyway.")
     ] = False
 ) -> str:
     """
@@ -655,27 +655,27 @@ APPROVAL_KEYWORD = "##APPROVE##"
 async def propose_and_review(
     path: Annotated[
         str,
-        Field(description="The path to the file being edited. Required for all intents. Prefer relative paths.")
+        Field(description="The path to the file being edited. Required for ALL intents (new session or continuation). Prefer relative paths.")
     ],
     new_string: Annotated[
         str,
-        Field(description="The replacement text or new content to propose. For patches, this replaces old_string. For full rewrites, this becomes the entire file content.")
+        Field(description="The replacement text or new content to propose. For patches, this replaces old_string. For full rewrites (old_string empty), this becomes the entire file content.")
     ],
     old_string: Annotated[
         str,
-        Field(default="", description="The text to find and replace. Keep minimal (only lines that change + 1-2 lines context for uniqueness). Leave empty for full file rewrites. Use 'OVERWRITE_FILE' to explicitly overwrite a non-empty file.")
+        Field(default="", description="The text to find and replace. BEST PRACTICE: Keep minimal - only the lines that change plus 1-2 lines of surrounding context for uniqueness. Leave empty for full file rewrites (new files or OVERWRITE_FILE sentinel for existing non-empty files). When continuing a session after 'REVIEW' feedback, this MUST match the user's edited content character-for-character.")
     ] = "",
     expected_replacements: Annotated[
         int,
-        Field(default=1, description="Expected number of times old_string appears in the file. Default is 1. Used for validation.")
+        Field(default=1, description="Expected number of times old_string appears in the file. Default is 1. The tool validates this count before applying the edit.")
     ] = 1,
     session_path: Annotated[
         Optional[str],
-        Field(default=None, description="Path to an existing review session directory (returned from previous call). Provide this to continue a review session after user feedback.")
+        Field(default=None, description="Path to an existing review session directory (returned from previous call as 'session_path' in JSON response). Provide this to CONTINUE a review session after user feedback. When user_action was 'REVIEW', you must reconstruct the current state from user_feedback_diff before providing old_string.")
     ] = None,
     edits: Annotated[
         Optional[List[EditPair]],
-        Field(default=None, description="List of edit operations for batch changes. Each edit has 'old_string' and 'new_string'. Use this to make multiple changes in one review. Cannot be combined with old_string/new_string params.")
+        Field(default=None, description="List of edit operations for batch changes (multi-patch mode). Each edit is {old_string, new_string}. All patches applied sequentially as one combined diff. Use this instead of old_string/new_string params when making multiple changes. Each old_string must be unique and minimal.")
     ] = None
 ) -> str:
     """
@@ -761,7 +761,7 @@ def grounding_search(query: str) -> str:
 def grep_content(
     pattern: Annotated[
         str,
-        Field(description="The regex pattern to search for in file contents.")
+        Field(description="The regex pattern to search for in file contents. Use this to LOCATE files and line numbers, then use read_files for targeted reading (grep->read workflow).")
     ],
     search_path: Annotated[
         str,
@@ -769,15 +769,15 @@ def grep_content(
     ] = '.',
     case_insensitive: Annotated[
         bool,
-        Field(default=False, description="If True, perform case-insensitive matching.")
+        Field(default=False, description="If True, perform case-insensitive matching (rg -i flag).")
     ] = False,
     context_lines: Annotated[
         int,
-        Field(default=2, description="Number of lines of context to show before and after each match.")
+        Field(default=2, description="Number of lines of context to show before and after each match (rg --context flag).")
     ] = 2,
     section_patterns: Annotated[
         Optional[List[str]],
-        Field(default=None, description="Custom regex patterns for detecting section boundaries (e.g., function/class definitions). Defaults to Python patterns ['def ', 'class ']. Pass empty list [] to disable section hints.")
+        Field(default=None, description="Regex patterns for section boundary detection to generate 'section end hint' metadata. Default: Python patterns ['^def ', '^class ']. Custom: provide your own patterns. Disable: pass empty list []. The hint helps you know where a function/class ends.")
     ] = None
 ) -> str:
     """

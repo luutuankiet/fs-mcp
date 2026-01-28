@@ -87,7 +87,7 @@ async def propose_and_review_logic(
     # --- Validation: Prevent accidental file overwrite ---
     # If old_string is blank but file has content, require explicit OVERWRITE_FILE sentinel
     OVERWRITE_SENTINEL = "OVERWRITE_FILE"
-    OLD_STRING_MAX_LENGTH = 1000
+    OLD_STRING_MAX_LENGTH = 2000
 
     # Get all old_strings to validate (from edits or single old_string)
     old_strings_to_validate = []

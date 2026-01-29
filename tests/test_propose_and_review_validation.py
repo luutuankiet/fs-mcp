@@ -2,7 +2,7 @@
 Tests for propose_and_review validation logic:
 1. Blank old_string on non-blank files should be rejected
 2. OVERWRITE_FILE sentinel allows explicit overwrites
-3. old_string > 500 characters should be rejected
+3. old_string > 2000 characters should be rejected
 """
 
 import pytest
@@ -119,9 +119,9 @@ class TestOldStringLengthValidation:
     """Tests for old_string length limit."""
 
     @pytest.mark.asyncio
-    async def test_old_string_over_500_chars_raises_error(self, temp_env):
-        """old_string over 500 characters should raise ValueError."""
-        long_old_string = "x" * 501  # 501 characters
+    async def test_old_string_over_2000_chars_raises_error(self, temp_env):
+        """old_string over 2000 characters should raise ValueError."""
+        long_old_string = "x" * 2001  # 2001 characters
 
         with pytest.raises(ValueError) as exc_info:
             await propose_and_review_logic(
@@ -139,11 +139,11 @@ class TestOldStringLengthValidation:
         assert "surgical edits" in error_message
 
     @pytest.mark.asyncio
-    async def test_old_string_exactly_500_chars_is_allowed(self, temp_env):
-        """old_string of exactly 500 characters should be allowed."""
-        # 500 chars is at the boundary, should not raise the length error
+    async def test_old_string_exactly_2000_chars_is_allowed(self, temp_env):
+        """old_string of exactly 2000 characters should be allowed."""
+        # 2000 chars is at the boundary, should not raise the length error
         # It may raise a different error (no match found), but NOT the length error
-        old_string_500 = "x" * 500
+        old_string_2000 = "x" * 2000
 
         try:
             await propose_and_review_logic(
@@ -151,7 +151,7 @@ class TestOldStringLengthValidation:
                 IS_VSCODE_CLI_AVAILABLE=False,
                 path=str(temp_env["test_file"]),
                 new_string="new content",
-                old_string=old_string_500,
+                old_string=old_string_2000,
                 expected_replacements=1
             )
         except ValueError as e:
@@ -160,8 +160,8 @@ class TestOldStringLengthValidation:
             assert "ERROR: old_string is too long" not in str(e)
 
     @pytest.mark.asyncio
-    async def test_old_string_under_500_chars_allowed(self, temp_env):
-        """old_string under 500 characters should be allowed (validation passes)."""
+    async def test_old_string_under_2000_chars_allowed(self, temp_env):
+        """old_string under 2000 characters should be allowed (validation passes)."""
         # This will fail at a later stage (no match found), but not at length validation
         short_old_string = "x" * 100
 
@@ -206,9 +206,9 @@ class TestEditsParameterValidation:
 
     @pytest.mark.asyncio
     async def test_edits_with_long_old_string_raises_error(self, temp_env):
-        """old_string over 500 chars in edits should raise ValueError with edit index."""
+        """old_string over 2000 chars in edits should raise ValueError with edit index."""
         edits = [
-            {"old_string": "x" * 501, "new_string": "new content"}
+            {"old_string": "x" * 2001, "new_string": "new content"}
         ]
 
         with pytest.raises(ValueError) as exc_info:
@@ -231,7 +231,7 @@ class TestEditsParameterValidation:
         """Multiple edits should validate all old_strings."""
         edits = [
             {"old_string": "valid_short", "new_string": "new1"},
-            {"old_string": "y" * 501, "new_string": "new2"}  # This one is too long
+            {"old_string": "y" * 2001, "new_string": "new2"}  # This one is too long (over 2000)
         ]
 
         with pytest.raises(ValueError) as exc_info:

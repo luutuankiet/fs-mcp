@@ -670,8 +670,8 @@ async def propose_and_review(
     ],
     new_string: Annotated[
         str,
-        Field(description="The replacement text or new content to propose. For patches, this replaces old_string. For full rewrites (old_string empty), this becomes the entire file content.")
-    ],
+        Field(default="", description="The replacement text or new content to propose. For patches, this replaces old_string. For full rewrites (old_string empty), this becomes the entire file content.")
+    ] = "",
     old_string: Annotated[
         str,
         Field(default="", description=OLD_STRING_DESCRIPTION)

@@ -116,16 +116,18 @@ None currently.
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
 | 001 | Fix propose_and_review tool blocking issue - investigate if synchronous execution causes client blocking when user reviews too long | 2026-01-28 | a9517fb | [001-fix-propose-and-review-tool-blocking-iss](./quick/001-fix-propose-and-review-tool-blocking-iss/) |
+| 002 | Fix multi-patch mode (edits parameter) bugs in propose_and_review - make new_string optional and normalize EditPair models | 2026-01-29 | fe2c383 | [002-fix-the-bug-reported-at-bug-report-md](./quick/002-fix-the-bug-reported-at-bug-report-md/) |
+| 003 | Fix pytest failures from validation order and schema description issues - add async decorators, handle nested anyOf, update length threshold | 2026-01-29 | bf58c1f | [003-fix-the-bug-outlined-at-2-bug-report-md-](./quick/003-fix-the-bug-outlined-at-2-bug-report-md-/) |
 
 ---
 
 ## Session Continuity
 
-**Last Activity:** 2026-01-28 - Quick task 001 execution complete
+**Last Activity:** 2026-01-29 - Quick task 003 execution complete
 
 **What's Next:**
-Quick task 001 complete - fixed propose_and_review blocking issue with async implementation
+Quick task 003 complete - fixed 11 failing pytest tests (async decorators, schema descriptions, length thresholds)
 
 ---
 
-**Last Updated:** 2026-01-28 (after quick-001 execution)
+**Last Updated:** 2026-01-29 (after quick-003 execution)

@@ -83,6 +83,20 @@ async def propose_and_review_logic(
     if edits:
         if not isinstance(edits, list) or len(edits) == 0:
             raise ValueError("'edits' must be a non-empty list.")
+
+        # Normalize EditPair objects to dicts for consistent handling
+        normalized_edits = []
+        for pair in edits:
+            if hasattr(pair, 'model_dump'):  # Pydantic v2
+                normalized_edits.append(pair.model_dump())
+            elif hasattr(pair, 'dict'):  # Pydantic v1
+                normalized_edits.append(pair.dict())
+            elif isinstance(pair, dict):
+                normalized_edits.append(pair)
+            else:
+                raise ValueError(f"Edit must be a dict or EditPair, got {type(pair)}")
+        edits = normalized_edits
+
         for i, pair in enumerate(edits):
             if not isinstance(pair, dict) or 'old_string' not in pair or 'new_string' not in pair:
                 raise ValueError(f"Edit at index {i} must have 'old_string' and 'new_string' keys.")

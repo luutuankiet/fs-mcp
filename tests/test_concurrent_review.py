@@ -10,6 +10,7 @@ import asyncio
 import tempfile
 from pathlib import Path
 import time
+import pytest
 
 # Import the server functions directly
 import sys
@@ -18,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from fs_mcp.server import initialize, propose_and_review, list_allowed_directories
 
 
+@pytest.mark.asyncio
 async def test_concurrent_async_operations():
     """
     Simplified test to verify that async operations don't block each other.
@@ -79,6 +81,7 @@ async def test_concurrent_async_operations():
     print(f"   This proves tasks run concurrently, not sequentially")
 
 
+@pytest.mark.asyncio
 async def test_async_function_verification():
     """
     Simple test to verify that propose_and_review_logic is actually an async function.

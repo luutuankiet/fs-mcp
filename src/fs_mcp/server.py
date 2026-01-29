@@ -23,23 +23,17 @@ from .utils import check_ripgrep, check_jq, check_yq
 LARGE_FILE_TOKEN_THRESHOLD = 2000
 
 # --- Dynamic Field Descriptions (using imported constants) ---
-MATCH_TEXT_DESCRIPTION = f"""The EXACT text to find (LITERAL matching, not regex).
+MATCH_TEXT_DESCRIPTION = f"""The EXACT text to find and replace (LITERAL, not regex).
 
-MANDATORY WORKFLOW:
-1. READ the file first
-2. COPY the exact text you want to replace (character-for-character)
-3. PASTE it here
+WORKFLOW: Read file → Copy exact text → Paste here.
 
-WHITESPACE IS CRITICAL: Spaces, tabs, trailing spaces, indentation must match exactly.
-MULTI-LINE: Include the newline character between lines. Example: "def foo():\\n    return 1" matches a function definition with 4-space indent.
+Whitespace matters. Multi-line: use \\n between lines.
+Example: "def foo():\\n    return 1"
 
-SPECIAL VALUES:
-- "" (empty): Creating NEW file (file must not exist)
-- "OVERWRITE_FILE": Replace entire file content
+SPECIAL: "" = new file, "OVERWRITE_FILE" = replace all.
 
-ERROR "No match found"? Re-read file, check invisible whitespace.
-
-Max {MATCH_TEXT_MAX_LENGTH} chars. Use 'edits' param for larger changes."""
+If no match, error tells you why - just re-read and retry.
+Max {MATCH_TEXT_MAX_LENGTH} chars."""
 
 EDITS_DESCRIPTION = f"""Batch multiple DIFFERENT edits in one call. More efficient than multiple tool calls.
 
@@ -710,7 +704,7 @@ async def propose_and_review(
     ] = "",
     expected_replacements: Annotated[
         int,
-        Field(default=1, description="Safety check: edit fails if match_text appears a different number of times. Default 1 = match must be unique. Leave as 1 unless intentionally replacing multiple identical strings (rare).")
+        Field(default=1, description="How many times match_text should appear. Default 1 = must be unique (ERRORS if found 0 or 2+ times). Set to N to replace all N occurrences.")
     ] = 1,
     session_path: Annotated[
         Optional[str],
@@ -726,108 +720,53 @@ async def propose_and_review(
     ] = False
 ) -> str:
     """
-    Edit a file with human review via VS Code diff.
+    Edit a file with human review. Returns APPROVE or REVIEW response.
 
     ════════════════════════════════════════════════════════════════════
-    STEP 0: ALWAYS READ THE FILE FIRST (before any edit)
+    QUICK REFERENCE (copy these patterns)
     ════════════════════════════════════════════════════════════════════
 
-    ┌──────────────────────────────────────────────────────────────────┐
-    │ SCENARIO TABLE                                                   │
-    ├──────────────────────────────────────────────────────────────────┤
-    │ Want to...        │ match_text         │ session_path           │
-    │───────────────────│────────────────────│────────────────────────│
-    │ Edit existing     │ exact text to find │ (omit)                 │
-    │ Create new file   │ "" (empty)         │ (omit)                 │
-    │ Overwrite all     │ "OVERWRITE_FILE"   │ (omit)                 │
-    │ Continue REVIEW   │ user's version     │ from prev response     │
-    └──────────────────────────────────────────────────────────────────┘
+    EDIT FILE:    propose_and_review(path="file.py", match_text="old", new_string="new")
+    NEW FILE:     propose_and_review(path="new.py", match_text="", new_string="content")
+    BATCH EDIT:   propose_and_review(path="file.py", edits=[{"match_text":"a","new_string":"b"}])
+    SAVE CHANGES: commit_review(session_path="/tmp/xyz", original_path="file.py")
 
-    EXAMPLE 1 - Simple edit:
-      propose_and_review(path="main.py", match_text="x = 1", new_string="x = 2")
+    ════════════════════════════════════════════════════════════════════
+    WORKFLOW: READ FILE → COPY EXACT TEXT → PASTE AS match_text
+    ════════════════════════════════════════════════════════════════════
 
-    EXAMPLE 2 - Multi-line (\\n = newline escape sequence):
-      # If file contains:
-      #   def foo():
-      #       return 1
-      # You write:
-      propose_and_review(
-          path="main.py",
-          match_text="def foo():\\n    return 1",
-          new_string="def foo():\\n    return 2"
-      )
+    match_text must be LITERAL and EXACT (not regex). Whitespace matters.
 
-    EXAMPLE 3 - Match not unique? Add surrounding lines:
-      # If "return x" appears multiple times, include more context:
-      match_text="def calculate():\\n    return x"
+    ERRORS ARE HELPFUL: "No match found" or "found N matches, expected 1"
+    tells you exactly what went wrong. Just re-read file and fix match_text.
 
-    EXAMPLE 4 - Batch edits (multiple changes in one call):
-      propose_and_review(
-          path="main.py",
-          edits=[
-              {"match_text": "old_name", "new_string": "new_name"},
-              {"match_text": "OLD_VAR", "new_string": "NEW_VAR"}
-          ]
-      )
-      # Use edits when making 2+ related changes to same file
-      # More efficient than multiple separate calls
-
-    WHITESPACE EXAMPLE (common pitfall):
-      File contains: "def hello():  "  (with trailing spaces)
-      ✓ WORKS:  match_text="def hello():  "  (includes trailing spaces)
-      ✗ FAILS:  match_text="def hello():"    (missing trailing spaces)
+    Multi-line example (file has "def foo():" on one line, "    return 1" on next):
+      match_text="def foo():\\n    return 1"
 
     ════════════════════════════════════════════════════════════════════
     RESPONSE HANDLING
     ════════════════════════════════════════════════════════════════════
 
-    Response JSON has "user_action" = "APPROVE" or "REVIEW":
+    IF "APPROVE": Call commit_review(session_path, path) to save.
 
-    IF "APPROVE":
-      → Call commit_review(session_path, path) to save changes to disk.
-
-    IF "REVIEW":
-      → User modified your proposal. Response includes:
-        - session_path: Pass this in your next call
-        - user_feedback_diff: Unified diff showing user's changes
-
-      EXAMPLE user_feedback_diff:
-        --- a/future_main.py (agent proposal)
-        +++ b/future_main.py (user feedback)
-        @@ -1,3 +1,3 @@
-        -x = 2        ← You proposed this
-        +x = 3        ← User changed it to this
-
-      YOUR NEXT CALL must use the USER's version as match_text:
-        propose_and_review(
-            path="main.py",
-            session_path="<from previous response>",
-            match_text="x = 3",        # User's version, NOT yours
-            new_string="x = 4"         # Your next proposal
-        )
+    IF "REVIEW": User edited your proposal. Response contains:
+      - session_path: Pass in your next call
+      - user_feedback_diff: Shows what user changed
+      Next call: match_text = user's edited version (not yours)
 
     ════════════════════════════════════════════════════════════════════
-    COMMON ERRORS AND FIXES
+    SPECIAL VALUES FOR match_text
     ════════════════════════════════════════════════════════════════════
-
-    "No match found"
-      → Your match_text doesn't exist character-for-character in file.
-      DEBUGGING: Re-read file, check trailing spaces, verify \\n usage.
-
-    "Expected 1 occurrence but found N"
-      → Text appears multiple times. Add surrounding lines to make unique.
-      Example: match_text="def foo():\\n    return x" instead of "return x"
-
-    "match_text is empty but file has content"
-      → You must specify what to replace. Read the file first.
-      → For intentional full rewrite: match_text="OVERWRITE_FILE"
+    ""              = Create new file (file must not exist)
+    "OVERWRITE_FILE" = Replace entire file content
 
     ════════════════════════════════════════════════════════════════════
     NOTES
     ════════════════════════════════════════════════════════════════════
-    - LITERAL string matching (not regex)
-    - Paths: relative ('src/main.py') or absolute both work
-    - Session paths valid until MCP server restarts
+    - Paths: relative ("src/main.py") or absolute both work
+    - expected_replacements=1 means match must be unique (errors if 0 or 2+ found)
+    - Sessions stay valid until server restarts
+    - user_feedback_diff is a unified diff showing exactly what user changed
     """
     return await propose_and_review_logic(
         validate_path,

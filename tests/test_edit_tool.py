@@ -57,7 +57,7 @@ def test_identity_edit_on_real_file(edit_tool, temp_src_dir):
 
     result = edit_tool._prepare_edit(
         file_path=str(file_to_test),
-        old_string=chunk_to_replace,
+        match_text=chunk_to_replace,
         new_string=chunk_to_replace,
         expected_replacements=1
     )
@@ -69,7 +69,7 @@ def test_identity_edit_on_real_file(edit_tool, temp_src_dir):
     # Full file identity edit should also detect no changes
     full_file_result = edit_tool._prepare_edit(
         file_path=str(file_to_test),
-        old_string=original_content,
+        match_text=original_content,
         new_string=original_content,
         expected_replacements=1
     )
@@ -90,7 +90,7 @@ def test_edit_preserves_literal_escape_sequences(edit_tool, temp_src_dir):
     # Replace the print line, keeping the literal \n intact
     result = edit_tool._prepare_edit(
         file_path=str(file_to_test),
-        old_string='print("Hello\\nWorld")',
+        match_text='print("Hello\\nWorld")',
         new_string='print("Hi\\nUniverse")',
         expected_replacements=1
     )

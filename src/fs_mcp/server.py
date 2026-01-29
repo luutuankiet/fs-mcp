@@ -16,20 +16,28 @@ import time
 import shutil
 import subprocess
 
-from .edit_tool import EditResult, RooStyleEditTool, propose_and_review_logic, OLD_STRING_MAX_LENGTH
+from .edit_tool import EditResult, RooStyleEditTool, propose_and_review_logic, MATCH_TEXT_MAX_LENGTH
 from .utils import check_ripgrep, check_jq, check_yq
 
 # --- Token threshold for large file warnings (conservative to enforce grep->read workflow) ---
 LARGE_FILE_TOKEN_THRESHOLD = 2000
 
 # --- Dynamic Field Descriptions (using imported constants) ---
-OLD_STRING_DESCRIPTION = f"The text to find and replace. HARD LIMIT: Must be under {OLD_STRING_MAX_LENGTH} characters - the tool will REJECT old_string over this limit. BEST PRACTICE: Keep minimal - only the lines that change plus 1-2 lines of surrounding context for uniqueness. If your change spans more text, use the 'edits' parameter to break into multiple small old_string/new_string pairs, each under {OLD_STRING_MAX_LENGTH} chars. Leave empty for full file rewrites (new files or OVERWRITE_FILE sentinel for existing files). When continuing after 'REVIEW' feedback, this MUST match user's edited content character-for-character."
+MATCH_TEXT_DESCRIPTION = f"""The exact text to find and replace. Copy verbatim from file.
 
-EDITS_DESCRIPTION = f"List of edit operations for batch changes (multi-patch mode). PREFERRED for multiple changes: each edit is {{old_string, new_string}} where each old_string must be under {OLD_STRING_MAX_LENGTH} chars and unique. All patches applied sequentially as one combined diff. Use this to break down large changes into smaller surgical edits that stay under the {OLD_STRING_MAX_LENGTH}-char limit."
+EXISTING FILE: Required. Empty = error.
+NEW FILE: Leave empty.
+OVERWRITE ALL: Use literal string 'OVERWRITE_FILE'.
 
-EDIT_PAIR_OLD_STRING_DESCRIPTION = f"The text to find and replace. MUST be under {OLD_STRING_MAX_LENGTH} characters (hard limit). MUST be unique in the file. Keep minimal: only the lines that change plus 1-2 lines of context for uniqueness."
+Must appear exactly once. Max {MATCH_TEXT_MAX_LENGTH} chars."""
 
-LARGE_FILE_PASSTHROUGH_DESCRIPTION = f"If False (default), blocks reading large JSON/YAML files (>{LARGE_FILE_TOKEN_THRESHOLD} tokens) and suggests using query_json/query_yaml instead. Set to True to bypass this safety check. WORKFLOW: Use grep_content first to understand structure, then read_files for targeted sections."
+EDITS_DESCRIPTION = f"Batch multiple edits: list of {{match_text, new_string}} pairs. Use instead of calling the tool multiple times. Each match_text must be unique and under {MATCH_TEXT_MAX_LENGTH} chars."
+
+EDIT_PAIR_MATCH_TEXT_DESCRIPTION = f"The exact text to find. Must be unique in file, under {MATCH_TEXT_MAX_LENGTH} chars."
+
+LARGE_FILE_PASSTHROUGH_DESCRIPTION = f"Set True to read large JSON/YAML files (>{LARGE_FILE_TOKEN_THRESHOLD} tokens). Default False suggests using query_json/query_yaml instead."
+
+BYPASS_MATCH_TEXT_LIMIT_DESCRIPTION = f"Set True to allow match_text over {MATCH_TEXT_MAX_LENGTH} chars. Try using 'edits' to split into smaller chunks first."
 
 # --- Pydantic Models for Tool Arguments ---
 
@@ -47,9 +55,9 @@ class FileReadRequest(BaseModel):
 
 
 class EditPair(BaseModel):
-    """A single edit operation with old and new string for batch editing."""
-    old_string: str = Field(description=EDIT_PAIR_OLD_STRING_DESCRIPTION)
-    new_string: str = Field(description="The replacement text that will replace old_string.")
+    """A single edit operation for batch editing. Provide the exact text to find (match_text) and its replacement (new_string)."""
+    match_text: str = Field(description=EDIT_PAIR_MATCH_TEXT_DESCRIPTION)
+    new_string: str = Field(description="The replacement text that will replace match_text.")
 
 
 # --- Global Configuration ---
@@ -666,77 +674,70 @@ APPROVAL_KEYWORD = "##APPROVE##"
 async def propose_and_review(
     path: Annotated[
         str,
-        Field(description="The path to the file being edited. Required for ALL intents (new session or continuation). Prefer relative paths.")
+        Field(description="Path to the file to edit.")
     ],
     new_string: Annotated[
         str,
-        Field(default="", description="The replacement text or new content to propose. For patches, this replaces old_string. For full rewrites (old_string empty), this becomes the entire file content.")
+        Field(default="", description="The replacement text.")
     ] = "",
-    old_string: Annotated[
+    match_text: Annotated[
         str,
-        Field(default="", description=OLD_STRING_DESCRIPTION)
+        Field(default="", description=MATCH_TEXT_DESCRIPTION)
     ] = "",
     expected_replacements: Annotated[
         int,
-        Field(default=1, description="Expected number of times old_string appears in the file. Default is 1. The tool validates this count before applying the edit.")
+        Field(default=1, description="Validation: fails if match_text appears a different number of times. Usually leave as 1.")
     ] = 1,
     session_path: Annotated[
         Optional[str],
-        Field(default=None, description="Path to an existing review session directory (returned from previous call as 'session_path' in JSON response). Provide this to CONTINUE a review session after user feedback. When user_action was 'REVIEW', you must reconstruct the current state from user_feedback_diff before providing old_string.")
+        Field(default=None, description="Only used after 'REVIEW' response. Pass session_path from previous response to continue.")
     ] = None,
     edits: Annotated[
         Optional[List[EditPair]],
         Field(default=None, description=EDITS_DESCRIPTION)
-    ] = None
+    ] = None,
+    bypass_match_text_limit: Annotated[
+        bool,
+        Field(default=False, description=BYPASS_MATCH_TEXT_LIMIT_DESCRIPTION)
+    ] = False
 ) -> str:
     """
-    Starts or continues an interactive review session using a VS Code diff view. This smart tool adapts its behavior based on the arguments provided.
+    Edit a file with human review via VS Code diff.
 
-    **BEST PRACTICE - MINIMAL CONTEXT:**
-    When using Intent 1 (Patch), do NOT provide the full file content in `old_string`.
-    Instead, provide only the specific lines you want to change, plus just enough
-    surrounding lines (1-2) to ensure uniqueness. This prevents context errors and
-    improves performance on large files.
+    BASIC USAGE:
+      propose_and_review(path="file.py", match_text="x = 1", new_string="x = 2")
 
-    **BEST PRACTICE - BATCH MULTIPLE CHANGES:**
-    When you need to make multiple edits to the same file, use the `edits` parameter
-    to batch them into a single review call. Break down your changes into manageable
-    old_string/new_string pairs — each pair should be minimal (only the lines that change
-    plus 1-2 lines of context for uniqueness). This gives the user one combined diff to
-    review instead of multiple sequential approvals.
+    PARAMETERS:
+      path        - File to edit (required)
+      match_text  - Text to find. MUST be exact copy from file. MUST be unique.
+      new_string  - Replacement text
 
-    Example `edits` value (list of dicts):
-    [
-      {"old_string": "def foo():\n    return 1", "new_string": "def foo():\n    return 2"},
-      {"old_string": "x = 10", "new_string": "x = 20"}
-    ]
+    IF MATCH APPEARS TWICE:
+      Add surrounding lines: match_text="line_before\\nx = 1\\nline_after"
 
-    Intents:
+    BATCH EDITS:
+      edits=[{"match_text": "a=1", "new_string": "a=2"}, {"match_text": "b=1", "new_string": "b=2"}]
 
-    1.  **Start New Review (Patch):** Provide `path`, `old_string`, `new_string`. Validates the patch against the original file.
-    2.  **Start New Review (Multi-Patch):** Provide `path` and `edits` (list of {old_string, new_string} dicts). All patches are applied sequentially and presented as one combined diff.
-    3.  **Start New Review (Full Rewrite):** Provide `path`, `new_string`, and leave `old_string` empty.
-    4.  **Continue Review (Contextual Patch):** Provide `path`, `session_path`, `old_string`, and `new_string`.
-        *   **CRITICAL: STATE RECONSTRUCTION PROTOCOL**
-            1.  **Analyze the Diff:** If `user_action` was 'REVIEW', the user has manually edited the file. The `user_feedback_diff` is the ABSOLUTE TRUTH.
-            2.  **Reconstruct Current State:** You must mentally apply the `user_feedback_diff` to your previous `new_string` to calculate the current file content.
-            3.  **Match Exactly:** Your `old_string` MUST match this reconstructed content character-for-character, *including* any comments or temporary notes the user typed (e.g., `# hey remove this`).
-            4.  **Execute Instructions:** If the user wrote instructions in the code, your `new_string` must perform those edits (e.g., removing the comment, fixing the line). Do not ignore them to add new features. **always remove the identified user review comment from the new_string.**
-    5.  **Continue Review (Full Rewrite / Recovery):** Provide `path`, `session_path`, `new_string`, and the full content of the file as `old_string`.
+    RESPONSE HANDLING:
+      APPROVE -> Done. Call commit_review(session_path, path) to finalize.
+      REVIEW  -> User modified your proposal. Read user_feedback_diff to see changes.
+                 Your next match_text must match user's edited version exactly.
+                 Example: You proposed "x=2", user changed to "x=3", your next match_text="x=3".
 
-    Note: `path` is always required to identify the file being edited, even when continuing a session.
-
-    It blocks and waits for the user to save the file, then returns their action ('APPROVE' or 'REVIEW').
+    SPECIAL CASES:
+      New file:       match_text="" (file must not exist)
+      Full overwrite: match_text="OVERWRITE_FILE"
     """
     return await propose_and_review_logic(
         validate_path,
         IS_VSCODE_CLI_AVAILABLE,
         path,
         new_string,
-        old_string,
+        match_text,
         expected_replacements,
         session_path,
-        edits
+        edits,
+        bypass_match_text_limit
     )
 
 @mcp.tool()

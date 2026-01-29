@@ -116,16 +116,17 @@ None currently.
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
 | 001 | Fix propose_and_review tool blocking issue - investigate if synchronous execution causes client blocking when user reviews too long | 2026-01-28 | a9517fb | [001-fix-propose-and-review-tool-blocking-iss](./quick/001-fix-propose-and-review-tool-blocking-iss/) |
+| 002 | Fix multi-patch mode (edits parameter) bugs in propose_and_review - make new_string optional and normalize EditPair models | 2026-01-29 | fe2c383 | [002-fix-the-bug-reported-at-bug-report-md](./quick/002-fix-the-bug-reported-at-bug-report-md/) |
 
 ---
 
 ## Session Continuity
 
-**Last Activity:** 2026-01-28 - Quick task 001 execution complete
+**Last Activity:** 2026-01-29 - Quick task 002 execution complete
 
 **What's Next:**
-Quick task 001 complete - fixed propose_and_review blocking issue with async implementation
+Quick task 002 complete - fixed multi-patch mode bugs in propose_and_review
 
 ---
 
-**Last Updated:** 2026-01-28 (after quick-001 execution)
+**Last Updated:** 2026-01-29 (after quick-002 execution)

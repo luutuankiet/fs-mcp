@@ -12,6 +12,18 @@ import tempfile
 from fs_mcp import server
 
 
+def get_description_from_schema(param_schema: dict) -> str | None:
+    """Extract description from schema, handling nested anyOf structures."""
+    if "description" in param_schema:
+        return param_schema["description"]
+    # Check nested anyOf structures (common with Optional[Annotated[...]])
+    if "anyOf" in param_schema:
+        for option in param_schema["anyOf"]:
+            if "description" in option:
+                return option["description"]
+    return None
+
+
 @pytest.fixture(scope="module")
 def initialized_server():
     """Initialize the server once for all tests in this module."""
@@ -112,8 +124,9 @@ class TestGrepContentArgDescriptions:
         """The 'section_patterns' parameter should have a description."""
         schema = get_tool_schema(initialized_server, "grep_content")
         section_patterns = schema["properties"]["section_patterns"]
-        assert "description" in section_patterns
-        assert "section" in section_patterns["description"].lower() or "def" in section_patterns["description"].lower()
+        desc = get_description_from_schema(section_patterns)
+        assert desc is not None, "section_patterns missing description"
+        assert "section" in desc.lower() or "def" in desc.lower()
 
 
 class TestQueryJsonArgDescriptions:
@@ -223,15 +236,17 @@ class TestProposeAndReviewArgDescriptions:
         """The 'session_path' parameter should have description for continuing sessions."""
         schema = get_tool_schema(initialized_server, "propose_and_review")
         session_path = schema["properties"]["session_path"]
-        assert "description" in session_path
-        assert "session" in session_path["description"].lower()
+        desc = get_description_from_schema(session_path)
+        assert desc is not None, "session_path missing description"
+        assert "session" in desc.lower()
 
     def test_edits_has_description(self, initialized_server):
         """The 'edits' parameter should have description for batch changes."""
         schema = get_tool_schema(initialized_server, "propose_and_review")
         edits = schema["properties"]["edits"]
-        assert "description" in edits
-        assert "batch" in edits["description"].lower() or "multiple" in edits["description"].lower()
+        desc = get_description_from_schema(edits)
+        assert desc is not None, "edits missing description"
+        assert "batch" in desc.lower() or "multiple" in desc.lower()
 
     def test_edit_pair_model_has_field_descriptions(self, initialized_server):
         """EditPair nested model should have descriptions for all fields."""
@@ -251,11 +266,10 @@ class TestProposeAndReviewArgDescriptions:
         assert "description" in props["new_string"]
 
     def test_required_parameters(self, initialized_server):
-        """path and new_string should be required."""
+        """path should be required (new_string is now optional with default="")."""
         schema = get_tool_schema(initialized_server, "propose_and_review")
         assert "required" in schema
         assert "path" in schema["required"]
-        assert "new_string" in schema["required"]
 
 
 class TestSchemaCompleteness:
@@ -273,7 +287,8 @@ class TestSchemaCompleteness:
         schema = get_tool_schema(initialized_server, tool_name)
 
         for param_name, param_schema in schema["properties"].items():
-            assert "description" in param_schema, \
+            desc = get_description_from_schema(param_schema)
+            assert desc is not None, \
                 f"Tool '{tool_name}' parameter '{param_name}' missing description"
 
     @pytest.mark.parametrize("tool_name,model_name", [

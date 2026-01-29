@@ -23,31 +23,21 @@ from .utils import check_ripgrep, check_jq, check_yq
 LARGE_FILE_TOKEN_THRESHOLD = 2000
 
 # --- Dynamic Field Descriptions (using imported constants) ---
-MATCH_TEXT_DESCRIPTION = f"""REQUIRED for editing existing files: The exact text currently in the file that you want to replace.
+MATCH_TEXT_DESCRIPTION = f"""The exact text to find and replace. Copy verbatim from file.
 
-HOW TO USE:
-1. First, use read_files or grep_content to see the current file content
-2. Copy the EXACT lines you want to change into this parameter
-3. Provide your replacement in new_string
+EXISTING FILE: Required. Empty = error.
+NEW FILE: Leave empty.
+OVERWRITE ALL: Use literal string 'OVERWRITE_FILE'.
 
-COMMON MISTAKE: Leaving match_text empty will FAIL for existing files. You must provide the text to find.
+Must appear exactly once. Max {MATCH_TEXT_MAX_LENGTH} chars."""
 
-BEST PRACTICE: Keep minimal - only the lines that change plus 1-2 lines of surrounding context for uniqueness. Each match_text must be under {MATCH_TEXT_MAX_LENGTH} characters.
+EDITS_DESCRIPTION = f"Batch multiple edits: list of {{match_text, new_string}} pairs. Use instead of calling the tool multiple times. Each match_text must be unique and under {MATCH_TEXT_MAX_LENGTH} chars."
 
-FOR MULTIPLE CHANGES: Use the 'edits' parameter to batch multiple {{match_text, new_string}} pairs.
+EDIT_PAIR_MATCH_TEXT_DESCRIPTION = f"The exact text to find. Must be unique in file, under {MATCH_TEXT_MAX_LENGTH} chars."
 
-FOR LARGE SECTIONS (>{MATCH_TEXT_MAX_LENGTH} chars): Set bypass_match_text_limit=True as a last resort.
+LARGE_FILE_PASSTHROUGH_DESCRIPTION = f"Set True to read large JSON/YAML files (>{LARGE_FILE_TOKEN_THRESHOLD} tokens). Default False suggests using query_json/query_yaml instead."
 
-FOR NEW FILES: Leave empty (file must not exist).
-FOR FULL OVERWRITES: Pass match_text='OVERWRITE_FILE' (requires user confirmation)."""
-
-EDITS_DESCRIPTION = f"List of edit operations for batch changes (multi-patch mode). PREFERRED for multiple changes: each edit is {{match_text, new_string}} where each match_text must be under {MATCH_TEXT_MAX_LENGTH} chars and unique. All patches applied sequentially as one combined diff. Use this to break down large changes into smaller surgical edits. Note: If individual edits still exceed the limit and cannot be broken down further, use bypass_match_text_limit=True as a last resort."
-
-EDIT_PAIR_MATCH_TEXT_DESCRIPTION = f"REQUIRED: The exact text currently in the file to find and replace. MUST be under {MATCH_TEXT_MAX_LENGTH} characters. MUST be unique in the file. Keep minimal: only the lines that change plus 1-2 lines of context for uniqueness."
-
-LARGE_FILE_PASSTHROUGH_DESCRIPTION = f"If False (default), blocks reading large JSON/YAML files (>{LARGE_FILE_TOKEN_THRESHOLD} tokens) and suggests using query_json/query_yaml instead. Set to True to bypass this safety check. WORKFLOW: Use grep_content first to understand structure, then read_files for targeted sections."
-
-BYPASS_MATCH_TEXT_LIMIT_DESCRIPTION = f"If False (default), rejects match_text over {MATCH_TEXT_MAX_LENGTH} characters. WORKFLOW: First try breaking your change into multiple smaller edits using the 'edits' parameter. LAST RESORT: Set to True only when you genuinely need to replace a large contiguous section that cannot be split (e.g., updating a complete markdown section body, replacing a large code block that must be changed atomically). This bypasses the {MATCH_TEXT_MAX_LENGTH}-char limit."
+BYPASS_MATCH_TEXT_LIMIT_DESCRIPTION = f"Set True to allow match_text over {MATCH_TEXT_MAX_LENGTH} chars. Try using 'edits' to split into smaller chunks first."
 
 # --- Pydantic Models for Tool Arguments ---
 
@@ -684,11 +674,11 @@ APPROVAL_KEYWORD = "##APPROVE##"
 async def propose_and_review(
     path: Annotated[
         str,
-        Field(description="The path to the file being edited. Required for ALL operations. Prefer relative paths.")
+        Field(description="Path to the file to edit.")
     ],
     new_string: Annotated[
         str,
-        Field(default="", description="The replacement text. This will replace match_text in the file.")
+        Field(default="", description="The replacement text.")
     ] = "",
     match_text: Annotated[
         str,
@@ -696,11 +686,11 @@ async def propose_and_review(
     ] = "",
     expected_replacements: Annotated[
         int,
-        Field(default=1, description="Expected number of times match_text appears in the file. Default is 1. The tool validates this count before applying the edit.")
+        Field(default=1, description="Validation: fails if match_text appears a different number of times. Usually leave as 1.")
     ] = 1,
     session_path: Annotated[
         Optional[str],
-        Field(default=None, description="Path to an existing review session directory (returned from previous call as 'session_path' in JSON response). Provide this to CONTINUE a review session after user feedback.")
+        Field(default=None, description="Only used after 'REVIEW' response. Pass session_path from previous response to continue.")
     ] = None,
     edits: Annotated[
         Optional[List[EditPair]],
@@ -712,46 +702,31 @@ async def propose_and_review(
     ] = False
 ) -> str:
     """
-    Edit a file through an interactive VS Code diff review.
+    Edit a file with human review via VS Code diff.
 
-    **QUICK START - Most common usage:**
-    To edit an existing file, you MUST provide:
-    - `path`: The file to edit
-    - `match_text`: The EXACT text currently in the file that you want to replace (NOT empty!)
-    - `new_string`: What to replace it with
+    BASIC USAGE:
+      propose_and_review(path="file.py", match_text="x = 1", new_string="x = 2")
 
-    Example:
-    ```
-    propose_and_review(
-        path="src/utils.py",
-        match_text="def calculate(x):\\n    return x * 2",
-        new_string="def calculate(x):\\n    return x * 3"
-    )
-    ```
+    PARAMETERS:
+      path        - File to edit (required)
+      match_text  - Text to find. MUST be exact copy from file. MUST be unique.
+      new_string  - Replacement text
 
-    **COMMON MISTAKE:** Leaving match_text empty will FAIL for existing files.
-    You must first read the file to get the exact text you want to change.
+    IF MATCH APPEARS TWICE:
+      Add surrounding lines: match_text="line_before\\nx = 1\\nline_after"
 
-    **BATCH MULTIPLE CHANGES:**
-    Use the `edits` parameter for multiple changes in one review:
-    ```
-    edits=[
-      {"match_text": "x = 1", "new_string": "x = 2"},
-      {"match_text": "y = 10", "new_string": "y = 20"}
-    ]
-    ```
+    BATCH EDITS:
+      edits=[{"match_text": "a=1", "new_string": "a=2"}, {"match_text": "b=1", "new_string": "b=2"}]
 
-    **HANDLING LARGE SECTIONS (>2000 chars):**
-    1. First, try breaking into multiple smaller edits using `edits` parameter
-    2. If a section genuinely cannot be split, use `bypass_match_text_limit=True`
+    RESPONSE HANDLING:
+      APPROVE -> Done. Call commit_review(session_path, path) to finalize.
+      REVIEW  -> User modified your proposal. Read user_feedback_diff to see changes.
+                 Your next match_text must match user's edited version exactly.
+                 Example: You proposed "x=2", user changed to "x=3", your next match_text="x=3".
 
-    **Intents:**
-    1. **Patch:** Provide `path`, `match_text`, `new_string`
-    2. **Multi-Patch:** Provide `path` and `edits` list
-    3. **New File:** Provide `path`, `new_string` (file must not exist, match_text empty)
-    4. **Continue Review:** Provide `path`, `session_path`, `match_text`, `new_string`
-
-    Returns 'APPROVE' or 'REVIEW' based on user action in VS Code diff view.
+    SPECIAL CASES:
+      New file:       match_text="" (file must not exist)
+      Full overwrite: match_text="OVERWRITE_FILE"
     """
     return await propose_and_review_logic(
         validate_path,

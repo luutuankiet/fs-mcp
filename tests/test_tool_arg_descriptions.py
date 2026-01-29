@@ -216,14 +216,14 @@ class TestProposeAndReviewArgDescriptions:
         assert "description" in new_string
         assert "replacement" in new_string["description"].lower() or "content" in new_string["description"].lower()
 
-    def test_old_string_has_description_and_default(self, initialized_server):
-        """The 'old_string' parameter should have description and empty default."""
+    def test_match_text_has_description_and_default(self, initialized_server):
+        """The 'match_text' parameter should have description and empty default."""
         schema = get_tool_schema(initialized_server, "propose_and_review")
-        old_string = schema["properties"]["old_string"]
-        assert "description" in old_string
-        assert old_string["default"] == ""
-        # Should mention minimal context
-        assert "minimal" in old_string["description"].lower() or "context" in old_string["description"].lower()
+        match_text = schema["properties"]["match_text"]
+        assert "description" in match_text
+        assert match_text["default"] == ""
+        # Should mention exact text matching
+        assert "exact" in match_text["description"].lower() or "literal" in match_text["description"].lower()
 
     def test_expected_replacements_has_description(self, initialized_server):
         """The 'expected_replacements' parameter should have description."""
@@ -260,8 +260,8 @@ class TestProposeAndReviewArgDescriptions:
         props = edit_pair["properties"]
 
         # Test each field has a description
-        assert "old_string" in props
-        assert "description" in props["old_string"]
+        assert "match_text" in props
+        assert "description" in props["match_text"]
         assert "new_string" in props
         assert "description" in props["new_string"]
 

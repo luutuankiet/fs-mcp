@@ -10,8 +10,11 @@ import time
 from pathlib import Path
 
 # --- Configuration Constants ---
-OLD_STRING_MAX_LENGTH = 2000
+MATCH_TEXT_MAX_LENGTH = 2000
 OVERWRITE_SENTINEL = "OVERWRITE_FILE"
+
+# Backward compatibility alias
+OLD_STRING_MAX_LENGTH = MATCH_TEXT_MAX_LENGTH
 
 # The new structure for returning detailed results from the edit tool.
 @dataclass
@@ -35,10 +38,10 @@ class RooStyleEditTool:
         return content.replace('\r\n', '\n').replace('\r', '\n')
 
 
-    def _prepare_edit(self, file_path: str, old_string: str, new_string: str, expected_replacements: int) -> EditResult:
+    def _prepare_edit(self, file_path: str, match_text: str, new_string: str, expected_replacements: int) -> EditResult:
         p = self.validate_path(file_path)
         file_exists = p.exists()
-        is_new_file = not file_exists and old_string == ""
+        is_new_file = not file_exists and match_text == ""
         if not file_exists and not is_new_file:
             return EditResult(success=False, message=f"File not found: {file_path}", error_type="file_not_found")
         if file_exists and is_new_file:
@@ -46,22 +49,22 @@ class RooStyleEditTool:
         original_content = p.read_text(encoding='utf-8') if file_exists else ""
 
         normalized_content = self.normalize_line_endings(original_content)
-        normalized_old = self.normalize_line_endings(old_string)
+        normalized_match = self.normalize_line_endings(match_text)
 
         if not is_new_file:
-            if old_string == new_string:
+            if match_text == new_string:
                 return EditResult(success=False, message="No changes to apply.", error_type="validation_error")
 
-            # If old_string is empty, it's a full rewrite of an existing file.
-            if not old_string:
+            # If match_text is empty, it's a full rewrite of an existing file.
+            if not match_text:
                 new_content = new_string
             else:
-                occurrences = self.count_occurrences(normalized_content, normalized_old)
+                occurrences = self.count_occurrences(normalized_content, normalized_match)
                 if occurrences == 0:
-                    return EditResult(success=False, message="No match found for 'old_string'.", error_type="validation_error")
+                    return EditResult(success=False, message="No match found for 'match_text'.", error_type="validation_error")
                 if occurrences != expected_replacements:
                     return EditResult(success=False, message=f"Expected {expected_replacements} occurrences but found {occurrences}.", error_type="validation_error")
-                new_content = normalized_content.replace(normalized_old, new_string)
+                new_content = normalized_content.replace(normalized_match, new_string)
         else:
             new_content = new_string
 
@@ -73,11 +76,11 @@ async def propose_and_review_logic(
     IS_VSCODE_CLI_AVAILABLE,
     path: str,
     new_string: str,
-    old_string: str = "",
+    match_text: str = "",
     expected_replacements: int = 1,
     session_path: Optional[str] = None,
     edits: Optional[list] = None,
-    bypass_old_string_limit: bool = False
+    bypass_match_text_limit: bool = False
 ) -> str:
     # --- Validate multi-edit parameter ---
     edit_pairs = None
@@ -99,59 +102,61 @@ async def propose_and_review_logic(
         edits = normalized_edits
 
         for i, pair in enumerate(edits):
-            if not isinstance(pair, dict) or 'old_string' not in pair or 'new_string' not in pair:
-                raise ValueError(f"Edit at index {i} must have 'old_string' and 'new_string' keys.")
+            if not isinstance(pair, dict) or 'match_text' not in pair or 'new_string' not in pair:
+                raise ValueError(f"Edit at index {i} must have 'match_text' and 'new_string' keys.")
         edit_pairs = edits
 
     # --- Validation: Prevent accidental file overwrite ---
-    # If old_string is blank but file has content, require explicit OVERWRITE_FILE sentinel
-    # Note: OVERWRITE_SENTINEL and OLD_STRING_MAX_LENGTH are module-level constants
+    # If match_text is blank but file has content, require explicit OVERWRITE_FILE sentinel
+    # Note: OVERWRITE_SENTINEL and MATCH_TEXT_MAX_LENGTH are module-level constants
 
-    # Get all old_strings to validate (from edits or single old_string)
-    old_strings_to_validate = []
+    # Get all match_texts to validate (from edits or single match_text)
+    match_texts_to_validate = []
     if edit_pairs:
-        old_strings_to_validate = [pair['old_string'] for pair in edit_pairs]
+        match_texts_to_validate = [pair['match_text'] for pair in edit_pairs]
     else:
-        old_strings_to_validate = [old_string]
+        match_texts_to_validate = [match_text]
 
-    # Check for blank old_string on non-blank files
-    for idx, os_val in enumerate(old_strings_to_validate):
-        if os_val == "" or (os_val is not None and os_val.strip() == ""):
-            # old_string is blank - check if file exists and has content
+    # Check for blank match_text on non-blank files
+    for idx, mt_val in enumerate(match_texts_to_validate):
+        if mt_val == "" or (mt_val is not None and mt_val.strip() == ""):
+            # match_text is blank - check if file exists and has content
             p = validate_path(path)
             if p.exists():
                 file_content = p.read_text(encoding='utf-8')
                 if file_content.strip() != "":
                     # File is not blank - reject unless user explicitly wants to overwrite
                     error_msg = (
-                        "WARN: you are trying to overwrite a file, which could be a mistake if you are not aware of the file content. "
-                        "Either use grep_text + read_files to do surgical update if this is a mistake, "
-                        f"or pass in old_string this exact string '{OVERWRITE_SENTINEL}' if the user agrees to overwrite."
+                        "ERROR: match_text is empty but file has content. "
+                        "You MUST provide the exact text you want to replace. "
+                        "Use read_files or grep_content first to get the current content, then provide "
+                        "the EXACT lines you want to change in match_text. "
+                        f"For intentional full-file overwrites, pass match_text='{OVERWRITE_SENTINEL}'."
                     )
                     if edit_pairs:
                         error_msg = f"Edit {idx}: {error_msg}"
                     raise ValueError(error_msg)
-        elif os_val == OVERWRITE_SENTINEL:
+        elif mt_val == OVERWRITE_SENTINEL:
             # User explicitly wants to overwrite - convert sentinel to empty string for processing
             if edit_pairs:
-                edit_pairs[idx]['old_string'] = ""
+                edit_pairs[idx]['match_text'] = ""
             else:
-                old_string = ""
+                match_text = ""
 
-    # Check for old_string that is too long (>2000 characters)
-    # Can be bypassed with bypass_old_string_limit=True for legitimate large section edits
-    for idx, os_val in enumerate(old_strings_to_validate):
-        if os_val and os_val != OVERWRITE_SENTINEL and len(os_val) > OLD_STRING_MAX_LENGTH:
-            if bypass_old_string_limit:
+    # Check for match_text that is too long (>2000 characters)
+    # Can be bypassed with bypass_match_text_limit=True for legitimate large section edits
+    for idx, mt_val in enumerate(match_texts_to_validate):
+        if mt_val and mt_val != OVERWRITE_SENTINEL and len(mt_val) > MATCH_TEXT_MAX_LENGTH:
+            if bypass_match_text_limit:
                 # User has explicitly opted to bypass the limit - this is a last resort
                 # Log a warning but allow the operation to proceed
                 continue
             error_msg = (
-                f"ERROR: old_string is too long (over {OLD_STRING_MAX_LENGTH} characters). "
+                f"ERROR: match_text is too long (over {MATCH_TEXT_MAX_LENGTH} characters). "
                 "RECOMMENDED: Break your change into multiple smaller edits using the 'edits' parameter, "
-                f"each old_string under {OLD_STRING_MAX_LENGTH} chars. "
+                f"each match_text under {MATCH_TEXT_MAX_LENGTH} chars. "
                 "LAST RESORT: If you genuinely need to replace a large contiguous section (e.g., updating a large markdown block), "
-                "set bypass_old_string_limit=True to override this limit."
+                "set bypass_match_text_limit=True to override this limit."
             )
             if edit_pairs:
                 error_msg = f"Edit {idx}: {error_msg}"
@@ -165,20 +170,20 @@ async def propose_and_review_logic(
             content = p.read_text(encoding='utf-8') if p.exists() else ""
             normalized = tool.normalize_line_endings(content)
             for i, pair in enumerate(edit_pairs):
-                old_s = tool.normalize_line_endings(pair['old_string'])
+                mt = tool.normalize_line_endings(pair['match_text'])
                 new_s = pair['new_string']
-                if old_s and normalized.count(old_s) != 1:
+                if mt and normalized.count(mt) != 1:
                     error_response = {
                         "error": True,
                         "error_type": "validation_error",
-                        "message": f"Edit {i}: old_string found {normalized.count(old_s)} times, expected 1.",
+                        "message": f"Edit {i}: match_text found {normalized.count(mt)} times, expected 1.",
                     }
                     line_count = content.count('\n') + 1
                     if line_count < 5000:
                         error_response["file_content"] = content
-                        error_response["hint"] = f"File has {line_count} lines. Content included above — use it to correct your old_string for edit {i}."
+                        error_response["hint"] = f"File has {line_count} lines. Content included above — use it to correct your match_text for edit {i}."
                     raise ValueError(json.dumps(error_response, indent=2))
-                normalized = normalized.replace(old_s, new_s, 1) if old_s else new_s
+                normalized = normalized.replace(mt, new_s, 1) if mt else new_s
             p.write_text(normalized, encoding='utf-8')
             response = {
                 "user_action": "AUTO_APPROVED",
@@ -187,7 +192,7 @@ async def propose_and_review_logic(
             }
             return json.dumps(response, indent=2)
         else:
-            prep_result = tool._prepare_edit(path, old_string, new_string, expected_replacements)
+            prep_result = tool._prepare_edit(path, match_text, new_string, expected_replacements)
             if not prep_result.success:
                 error_response = {
                     "error": True,
@@ -201,7 +206,7 @@ async def propose_and_review_logic(
                         line_count = content.count('\n') + 1
                         if line_count < 5000:
                             error_response["file_content"] = content
-                            error_response["hint"] = f"File has {line_count} lines. Content included above — use it to correct your old_string."
+                            error_response["hint"] = f"File has {line_count} lines. Content included above — use it to correct your match_text."
                         else:
                             error_response["hint"] = f"File has {line_count} lines (too large to include). Re-read the file to get the current content before retrying."
                 raise ValueError(json.dumps(error_response, indent=2))
@@ -237,45 +242,45 @@ async def propose_and_review_logic(
             # --- MULTI-EDIT CONTINUATION ---
             normalized = tool.normalize_line_endings(staged_content)
             for i, pair in enumerate(edit_pairs):
-                old_s = tool.normalize_line_endings(pair['old_string'])
+                mt = tool.normalize_line_endings(pair['match_text'])
                 new_s = pair['new_string']
-                if old_s:
-                    occurrences = tool.count_occurrences(normalized, old_s)
+                if mt:
+                    occurrences = tool.count_occurrences(normalized, mt)
                     if occurrences != 1:
                         error_response = {
                             "error": True,
                             "error_type": "validation_error",
-                            "message": f"Edit {i}: old_string found {occurrences} times in session content, expected 1.",
+                            "message": f"Edit {i}: match_text found {occurrences} times in session content, expected 1.",
                         }
                         line_count = staged_content.count('\n') + 1
                         if line_count < 5000:
                             error_response["file_content"] = staged_content
-                            error_response["hint"] = f"Session file has {line_count} lines. Content included above — use it to correct your old_string for edit {i}."
+                            error_response["hint"] = f"Session file has {line_count} lines. Content included above — use it to correct your match_text for edit {i}."
                         raise ValueError(json.dumps(error_response, indent=2))
-                    normalized = normalized.replace(old_s, new_s, 1)
+                    normalized = normalized.replace(mt, new_s, 1)
                 else:
                     normalized = new_s
             active_proposal_content = normalized
             future_file_path.write_text(active_proposal_content, encoding='utf-8')
         else:
             # --- SINGLE-EDIT CONTINUATION ---
-            occurrences = tool.count_occurrences(staged_content, old_string)
+            occurrences = tool.count_occurrences(staged_content, match_text)
 
             if occurrences != 1:
                 error_response = {
                     "error": True,
                     "error_type": "validation_error",
-                    "message": f"Contextual patch failed. The provided 'old_string' anchor was found {occurrences} times in the user's last version, but expected exactly 1.",
+                    "message": f"Contextual patch failed. The provided 'match_text' was found {occurrences} times in the user's last version, but expected exactly 1.",
                 }
                 line_count = staged_content.count('\n') + 1
                 if line_count < 5000:
                     error_response["file_content"] = staged_content
-                    error_response["hint"] = f"Session file has {line_count} lines. Content included above — use it to correct your old_string."
+                    error_response["hint"] = f"Session file has {line_count} lines. Content included above — use it to correct your match_text."
                 else:
                     error_response["hint"] = f"Session file has {line_count} lines (too large to include). Re-read the file to get the current content before retrying."
                 raise ValueError(json.dumps(error_response, indent=2))
 
-            active_proposal_content = staged_content.replace(old_string, new_string, 1)
+            active_proposal_content = staged_content.replace(match_text, new_string, 1)
             future_file_path.write_text(active_proposal_content, encoding='utf-8')
         
 
@@ -295,21 +300,21 @@ async def propose_and_review_logic(
             normalized = tool.normalize_line_endings(original_content)
 
             for i, pair in enumerate(edit_pairs):
-                old_s = tool.normalize_line_endings(pair['old_string'])
+                mt = tool.normalize_line_endings(pair['match_text'])
                 new_s = pair['new_string']
-                if old_s:
-                    occurrences = tool.count_occurrences(normalized, old_s)
+                if mt:
+                    occurrences = tool.count_occurrences(normalized, mt)
                     if occurrences == 0:
                         if temp_dir.exists(): shutil.rmtree(temp_dir)
                         error_response = {
                             "error": True,
                             "error_type": "validation_error",
-                            "message": f"Edit {i}: No match found for 'old_string'.",
+                            "message": f"Edit {i}: No match found for 'match_text'.",
                         }
                         line_count = original_content.count('\n') + 1
                         if line_count < 5000:
                             error_response["file_content"] = original_content
-                            error_response["hint"] = f"File has {line_count} lines. Content included above — use it to correct your old_string for edit {i}."
+                            error_response["hint"] = f"File has {line_count} lines. Content included above — use it to correct your match_text for edit {i}."
                         else:
                             error_response["hint"] = f"File has {line_count} lines (too large to include). Re-read the file to get the current content before retrying."
                         raise ValueError(json.dumps(error_response, indent=2))
@@ -318,19 +323,19 @@ async def propose_and_review_logic(
                         error_response = {
                             "error": True,
                             "error_type": "validation_error",
-                            "message": f"Edit {i}: Expected 1 occurrence but found {occurrences}. Provide more context in old_string to ensure uniqueness.",
+                            "message": f"Edit {i}: Expected 1 occurrence but found {occurrences}. Provide more context in match_text to ensure uniqueness.",
                         }
                         line_count = original_content.count('\n') + 1
                         if line_count < 5000:
                             error_response["file_content"] = original_content
-                            error_response["hint"] = f"File has {line_count} lines. Content included above — use it to correct your old_string for edit {i}."
+                            error_response["hint"] = f"File has {line_count} lines. Content included above — use it to correct your match_text for edit {i}."
                         raise ValueError(json.dumps(error_response, indent=2))
-                    normalized = normalized.replace(old_s, new_s, 1)
+                    normalized = normalized.replace(mt, new_s, 1)
                 else:
-                    # Empty old_string in a multi-edit means full rewrite (only valid as sole edit)
+                    # Empty match_text in a multi-edit means full rewrite (only valid as sole edit)
                     if len(edit_pairs) > 1:
                         if temp_dir.exists(): shutil.rmtree(temp_dir)
-                        raise ValueError("Edit with empty old_string (full rewrite) cannot be combined with other edits.")
+                        raise ValueError("Edit with empty match_text (full rewrite) cannot be combined with other edits.")
                     normalized = new_s
 
             current_file_path.write_text(original_content, encoding='utf-8')
@@ -338,7 +343,7 @@ async def propose_and_review_logic(
             future_file_path.write_text(active_proposal_content, encoding='utf-8')
         else:
             # --- SINGLE-EDIT MODE (original behavior) ---
-            prep_result = tool._prepare_edit(path, old_string, new_string, expected_replacements)
+            prep_result = tool._prepare_edit(path, match_text, new_string, expected_replacements)
             if not prep_result.success:
                 if temp_dir.exists(): shutil.rmtree(temp_dir)
                 error_response = {
@@ -351,7 +356,7 @@ async def propose_and_review_logic(
                     line_count = content.count('\n') + 1
                     if line_count < 5000:
                         error_response["file_content"] = content
-                        error_response["hint"] = f"File has {line_count} lines. Content included above — use it to correct your old_string."
+                        error_response["hint"] = f"File has {line_count} lines. Content included above — use it to correct your match_text."
                     else:
                         error_response["hint"] = f"File has {line_count} lines (too large to include). Re-read the file to get the current content before retrying."
                 raise ValueError(json.dumps(error_response, indent=2))

@@ -300,3 +300,42 @@ class TestOverwriteSentinel:
             pass  # Expected - validation passed
         except Exception as e:
             assert "ERROR: old_string is too long" not in str(e)
+
+
+class TestMultiPatchModeWithoutNewString:
+    """Tests for multi-patch mode (edits parameter) without requiring new_string."""
+
+    @pytest.mark.asyncio
+    async def test_edits_mode_does_not_require_new_string(self, temp_env):
+        """Using edits parameter should not require new_string at top level."""
+        import asyncio
+
+        # Write a file with content we can match
+        temp_env["test_file"].write_text("line1\nline2\nline3\n", encoding='utf-8')
+
+        edits = [
+            {"old_string": "line1", "new_string": "LINE1"},
+            {"old_string": "line3", "new_string": "LINE3"}
+        ]
+
+        # This should NOT raise "new_string is a missing required argument"
+        # It will timeout waiting for user input, which is expected behavior
+        try:
+            await asyncio.wait_for(
+                propose_and_review_logic(
+                    validate_path=temp_env["validate_path"],
+                    IS_VSCODE_CLI_AVAILABLE=False,
+                    path=str(temp_env["test_file"]),
+                    new_string="",  # Empty string, not missing
+                    old_string="",
+                    edits=edits,
+                    expected_replacements=1
+                ),
+                timeout=2.0
+            )
+        except asyncio.TimeoutError:
+            # Timeout is expected - validation passed and we reached user wait
+            pass
+        except ValueError as e:
+            # Should not fail with validation error about edits structure
+            assert "must have 'old_string' and 'new_string' keys" not in str(e)

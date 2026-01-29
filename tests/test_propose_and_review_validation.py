@@ -135,8 +135,8 @@ class TestOldStringLengthValidation:
 
         error_message = str(exc_info.value)
         assert "ERROR: old_string is too long" in error_message
-        assert "brittle" in error_message
-        assert "surgical edits" in error_message
+        assert "edits" in error_message.lower()  # Suggests using edits parameter
+        assert "bypass_old_string_limit=True" in error_message  # Suggests bypass as last resort
 
     @pytest.mark.asyncio
     async def test_old_string_exactly_2000_chars_is_allowed(self, temp_env):
@@ -339,3 +339,198 @@ class TestMultiPatchModeWithoutNewString:
         except ValueError as e:
             # Should not fail with validation error about edits structure
             assert "must have 'old_string' and 'new_string' keys" not in str(e)
+
+
+class TestBypassOldStringLimit:
+    """Tests for bypass_old_string_limit parameter functionality."""
+
+    @pytest.mark.asyncio
+    async def test_long_old_string_rejected_without_bypass(self, temp_env):
+        """old_string over 2000 characters should be rejected when bypass is False (default)."""
+        long_old_string = "x" * 2001  # 2001 characters
+
+        with pytest.raises(ValueError) as exc_info:
+            await propose_and_review_logic(
+                validate_path=temp_env["validate_path"],
+                IS_VSCODE_CLI_AVAILABLE=False,
+                path=str(temp_env["test_file"]),
+                new_string="new content",
+                old_string=long_old_string,
+                expected_replacements=1,
+                bypass_old_string_limit=False  # Default behavior
+            )
+
+        error_message = str(exc_info.value)
+        assert "ERROR: old_string is too long" in error_message
+        assert "bypass_old_string_limit=True" in error_message
+
+    @pytest.mark.asyncio
+    async def test_long_old_string_allowed_with_bypass(self, temp_env):
+        """old_string over 2000 characters should be allowed when bypass is True."""
+        import asyncio
+
+        # Write a file with content that includes the long old_string
+        long_content = "x" * 2500  # 2500 characters
+        temp_env["test_file"].write_text(long_content, encoding='utf-8')
+
+        # This should NOT raise the "too long" error because bypass is True
+        # It will proceed to validation and timeout waiting for user input
+        try:
+            await asyncio.wait_for(
+                propose_and_review_logic(
+                    validate_path=temp_env["validate_path"],
+                    IS_VSCODE_CLI_AVAILABLE=False,
+                    path=str(temp_env["test_file"]),
+                    new_string="replaced content",
+                    old_string=long_content,  # Over 2000 chars
+                    expected_replacements=1,
+                    bypass_old_string_limit=True  # Bypass the limit
+                ),
+                timeout=2.0
+            )
+        except asyncio.TimeoutError:
+            # Timeout is expected - validation passed and we reached user wait
+            pass
+        except ValueError as e:
+            # Should NOT be the "too long" error
+            assert "ERROR: old_string is too long" not in str(e)
+
+    @pytest.mark.asyncio
+    async def test_bypass_does_not_affect_under_limit_old_string(self, temp_env):
+        """bypass_old_string_limit should have no effect on old_strings under 2000 chars."""
+        import asyncio
+
+        short_content = "short content"
+        temp_env["test_file"].write_text(short_content, encoding='utf-8')
+
+        # Both should behave the same for short content
+        for bypass_value in [True, False]:
+            try:
+                await asyncio.wait_for(
+                    propose_and_review_logic(
+                        validate_path=temp_env["validate_path"],
+                        IS_VSCODE_CLI_AVAILABLE=False,
+                        path=str(temp_env["test_file"]),
+                        new_string="new content",
+                        old_string=short_content,
+                        expected_replacements=1,
+                        bypass_old_string_limit=bypass_value
+                    ),
+                    timeout=2.0
+                )
+            except asyncio.TimeoutError:
+                # Timeout is expected - validation passed
+                pass
+            except ValueError as e:
+                # Should not be the "too long" error
+                assert "ERROR: old_string is too long" not in str(e)
+
+    @pytest.mark.asyncio
+    async def test_bypass_with_edits_parameter(self, temp_env):
+        """bypass_old_string_limit should work with the edits parameter."""
+        import asyncio
+
+        # Write a file with large content
+        long_section = "y" * 2500
+        temp_env["test_file"].write_text(f"header\n{long_section}\nfooter\n", encoding='utf-8')
+
+        edits = [
+            {"old_string": long_section, "new_string": "replaced section"}
+        ]
+
+        # Without bypass, should raise error
+        with pytest.raises(ValueError) as exc_info:
+            await propose_and_review_logic(
+                validate_path=temp_env["validate_path"],
+                IS_VSCODE_CLI_AVAILABLE=False,
+                path=str(temp_env["test_file"]),
+                new_string="",
+                old_string="",
+                edits=edits,
+                expected_replacements=1,
+                bypass_old_string_limit=False
+            )
+
+        error_message = str(exc_info.value)
+        assert "Edit 0:" in error_message
+        assert "ERROR: old_string is too long" in error_message
+
+        # With bypass, should proceed past validation
+        try:
+            await asyncio.wait_for(
+                propose_and_review_logic(
+                    validate_path=temp_env["validate_path"],
+                    IS_VSCODE_CLI_AVAILABLE=False,
+                    path=str(temp_env["test_file"]),
+                    new_string="",
+                    old_string="",
+                    edits=edits,
+                    expected_replacements=1,
+                    bypass_old_string_limit=True  # Bypass the limit
+                ),
+                timeout=2.0
+            )
+        except asyncio.TimeoutError:
+            # Timeout is expected - validation passed
+            pass
+        except ValueError as e:
+            # Should NOT be the "too long" error
+            assert "ERROR: old_string is too long" not in str(e)
+
+    @pytest.mark.asyncio
+    async def test_bypass_multiple_edits_all_long(self, temp_env):
+        """bypass should allow multiple edits that all exceed the limit."""
+        import asyncio
+
+        # Write a file with multiple large sections
+        section1 = "a" * 2500
+        section2 = "b" * 3000
+        temp_env["test_file"].write_text(f"{section1}\nmiddle\n{section2}\n", encoding='utf-8')
+
+        edits = [
+            {"old_string": section1, "new_string": "replaced1"},
+            {"old_string": section2, "new_string": "replaced2"}
+        ]
+
+        # With bypass, should proceed past validation for both edits
+        try:
+            await asyncio.wait_for(
+                propose_and_review_logic(
+                    validate_path=temp_env["validate_path"],
+                    IS_VSCODE_CLI_AVAILABLE=False,
+                    path=str(temp_env["test_file"]),
+                    new_string="",
+                    old_string="",
+                    edits=edits,
+                    expected_replacements=1,
+                    bypass_old_string_limit=True
+                ),
+                timeout=2.0
+            )
+        except asyncio.TimeoutError:
+            # Timeout is expected - validation passed for both
+            pass
+        except ValueError as e:
+            # Should NOT be the "too long" error for either edit
+            assert "ERROR: old_string is too long" not in str(e)
+
+    @pytest.mark.asyncio
+    async def test_error_message_suggests_bypass(self, temp_env):
+        """Error message should suggest using bypass_old_string_limit=True."""
+        long_old_string = "z" * 2001
+
+        with pytest.raises(ValueError) as exc_info:
+            await propose_and_review_logic(
+                validate_path=temp_env["validate_path"],
+                IS_VSCODE_CLI_AVAILABLE=False,
+                path=str(temp_env["test_file"]),
+                new_string="new content",
+                old_string=long_old_string,
+                expected_replacements=1
+            )
+
+        error_message = str(exc_info.value)
+        # Should mention both the edits parameter workaround AND the bypass as last resort
+        assert "edits" in error_message.lower() or "break" in error_message.lower()
+        assert "bypass_old_string_limit=True" in error_message
+        assert "LAST RESORT" in error_message

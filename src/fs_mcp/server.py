@@ -23,13 +23,15 @@ from .utils import check_ripgrep, check_jq, check_yq
 LARGE_FILE_TOKEN_THRESHOLD = 2000
 
 # --- Dynamic Field Descriptions (using imported constants) ---
-OLD_STRING_DESCRIPTION = f"The text to find and replace. HARD LIMIT: Must be under {OLD_STRING_MAX_LENGTH} characters - the tool will REJECT old_string over this limit. BEST PRACTICE: Keep minimal - only the lines that change plus 1-2 lines of surrounding context for uniqueness. If your change spans more text, use the 'edits' parameter to break into multiple small old_string/new_string pairs, each under {OLD_STRING_MAX_LENGTH} chars. Leave empty for full file rewrites (new files or OVERWRITE_FILE sentinel for existing files). When continuing after 'REVIEW' feedback, this MUST match user's edited content character-for-character."
+OLD_STRING_DESCRIPTION = f"The text to find and replace. DEFAULT LIMIT: Must be under {OLD_STRING_MAX_LENGTH} characters. BEST PRACTICE: Keep minimal - only the lines that change plus 1-2 lines of surrounding context for uniqueness. If your change spans more text, use the 'edits' parameter to break into multiple small old_string/new_string pairs, each under {OLD_STRING_MAX_LENGTH} chars. LAST RESORT: If you genuinely need to replace a large contiguous section (e.g., updating a markdown section body that exceeds {OLD_STRING_MAX_LENGTH} chars and cannot be split into smaller chunks), set bypass_old_string_limit=True. Leave empty for full file rewrites (new files or OVERWRITE_FILE sentinel for existing files). When continuing after 'REVIEW' feedback, this MUST match user's edited content character-for-character."
 
-EDITS_DESCRIPTION = f"List of edit operations for batch changes (multi-patch mode). PREFERRED for multiple changes: each edit is {{old_string, new_string}} where each old_string must be under {OLD_STRING_MAX_LENGTH} chars and unique. All patches applied sequentially as one combined diff. Use this to break down large changes into smaller surgical edits that stay under the {OLD_STRING_MAX_LENGTH}-char limit."
+EDITS_DESCRIPTION = f"List of edit operations for batch changes (multi-patch mode). PREFERRED for multiple changes: each edit is {{old_string, new_string}} where each old_string must be under {OLD_STRING_MAX_LENGTH} chars and unique. All patches applied sequentially as one combined diff. Use this to break down large changes into smaller surgical edits that stay under the {OLD_STRING_MAX_LENGTH}-char limit. Note: If individual edits still exceed the limit and cannot be broken down further, use bypass_old_string_limit=True as a last resort."
 
 EDIT_PAIR_OLD_STRING_DESCRIPTION = f"The text to find and replace. MUST be under {OLD_STRING_MAX_LENGTH} characters (hard limit). MUST be unique in the file. Keep minimal: only the lines that change plus 1-2 lines of context for uniqueness."
 
 LARGE_FILE_PASSTHROUGH_DESCRIPTION = f"If False (default), blocks reading large JSON/YAML files (>{LARGE_FILE_TOKEN_THRESHOLD} tokens) and suggests using query_json/query_yaml instead. Set to True to bypass this safety check. WORKFLOW: Use grep_content first to understand structure, then read_files for targeted sections."
+
+BYPASS_OLD_STRING_LIMIT_DESCRIPTION = f"If False (default), rejects old_string over {OLD_STRING_MAX_LENGTH} characters. WORKFLOW: First try breaking your change into multiple smaller edits using the 'edits' parameter. LAST RESORT: Set to True only when you genuinely need to replace a large contiguous section that cannot be split (e.g., updating a complete markdown section body, replacing a large code block that must be changed atomically). This bypasses the {OLD_STRING_MAX_LENGTH}-char limit for old_string."
 
 # --- Pydantic Models for Tool Arguments ---
 
@@ -687,7 +689,11 @@ async def propose_and_review(
     edits: Annotated[
         Optional[List[EditPair]],
         Field(default=None, description=EDITS_DESCRIPTION)
-    ] = None
+    ] = None,
+    bypass_old_string_limit: Annotated[
+        bool,
+        Field(default=False, description=BYPASS_OLD_STRING_LIMIT_DESCRIPTION)
+    ] = False
 ) -> str:
     """
     Starts or continues an interactive review session using a VS Code diff view. This smart tool adapts its behavior based on the arguments provided.
@@ -711,10 +717,21 @@ async def propose_and_review(
       {"old_string": "x = 10", "new_string": "x = 20"}
     ]
 
+    **HANDLING LARGE SECTIONS (bypass_old_string_limit):**
+    By default, old_string is limited to 2000 characters to encourage surgical edits.
+    If you need to replace a large contiguous section that genuinely cannot be broken
+    into smaller chunks (e.g., a complete markdown section body, a large code block
+    that must be replaced atomically), use `bypass_old_string_limit=True` as a LAST RESORT.
+
+    WORKFLOW for large edits:
+    1. First, try breaking your change into multiple smaller edits using the `edits` parameter
+    2. If individual sections still exceed 2000 chars and cannot be logically split, then
+       use `bypass_old_string_limit=True` to override the limit
+
     Intents:
 
     1.  **Start New Review (Patch):** Provide `path`, `old_string`, `new_string`. Validates the patch against the original file.
-    2.  **Start New Review (Multi-Patch):** Provide `path` and `edits` (list of {old_string, new_string} dicts). All patches are applied sequentially and presented as one combined diff.
+    2.  **Start New Review (Multi-Patch):** Provide `path` and `edits` (list of {old_string, new_string} dicts). All patches applied sequentially as one combined diff.
     3.  **Start New Review (Full Rewrite):** Provide `path`, `new_string`, and leave `old_string` empty.
     4.  **Continue Review (Contextual Patch):** Provide `path`, `session_path`, `old_string`, and `new_string`.
         *   **CRITICAL: STATE RECONSTRUCTION PROTOCOL**
@@ -736,7 +753,8 @@ async def propose_and_review(
         old_string,
         expected_replacements,
         session_path,
-        edits
+        edits,
+        bypass_old_string_limit
     )
 
 @mcp.tool()

@@ -76,7 +76,8 @@ async def propose_and_review_logic(
     old_string: str = "",
     expected_replacements: int = 1,
     session_path: Optional[str] = None,
-    edits: Optional[list] = None
+    edits: Optional[list] = None,
+    bypass_old_string_limit: bool = False
 ) -> str:
     # --- Validate multi-edit parameter ---
     edit_pairs = None
@@ -137,13 +138,20 @@ async def propose_and_review_logic(
             else:
                 old_string = ""
 
-    # Check for old_string that is too long (>500 characters)
+    # Check for old_string that is too long (>2000 characters)
+    # Can be bypassed with bypass_old_string_limit=True for legitimate large section edits
     for idx, os_val in enumerate(old_strings_to_validate):
         if os_val and os_val != OVERWRITE_SENTINEL and len(os_val) > OLD_STRING_MAX_LENGTH:
+            if bypass_old_string_limit:
+                # User has explicitly opted to bypass the limit - this is a last resort
+                # Log a warning but allow the operation to proceed
+                continue
             error_msg = (
-                f"ERROR: old_string is too long and brittle (over {OLD_STRING_MAX_LENGTH} characters) which does not follow best practice. "
-                "You might be over eager proposing changes to parts that do not need change at all. "
-                "Consider do send the list of surgical edits with smaller tokens per edit instead of doing a big rewrite."
+                f"ERROR: old_string is too long (over {OLD_STRING_MAX_LENGTH} characters). "
+                "RECOMMENDED: Break your change into multiple smaller edits using the 'edits' parameter, "
+                f"each old_string under {OLD_STRING_MAX_LENGTH} chars. "
+                "LAST RESORT: If you genuinely need to replace a large contiguous section (e.g., updating a large markdown block), "
+                "set bypass_old_string_limit=True to override this limit."
             )
             if edit_pairs:
                 error_msg = f"Edit {idx}: {error_msg}"

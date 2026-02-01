@@ -70,9 +70,10 @@ def extract_file_outline(content: str, file_path: str = "") -> List[Dict[str, An
     if suffix in ('.py', ''):
         patterns = [
             (r'^class\s+(\w+)', 'class'),
-            (r'^def\s+(\w+)', 'function'),
-            (r'^(\s+)def\s+(\w+)', 'method'),
             (r'^async\s+def\s+(\w+)', 'async function'),
+            (r'^def\s+(\w+)', 'function'),
+            (r'^(\s+)async\s+def\s+(\w+)', 'async method'),
+            (r'^(\s+)def\s+(\w+)', 'method'),
         ]
     elif suffix in ('.js', '.ts', '.jsx', '.tsx', '.mjs'):
         patterns = [

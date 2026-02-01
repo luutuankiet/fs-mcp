@@ -125,6 +125,8 @@ def extract_file_outline(content: str, file_path: str = "") -> List[Dict[str, An
                     'line': i,
                     'signature': signature
                 })
+                if len(outline) >= 500:  # Cap the number of symbols
+                    return outline
                 break  # Only match one pattern per line
 
     return outline

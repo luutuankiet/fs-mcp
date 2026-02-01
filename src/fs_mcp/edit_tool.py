@@ -129,6 +129,40 @@ def extract_file_outline(content: str, file_path: str = "") -> List[Dict[str, An
     return outline
 
 
+def _extract_grep_keywords(match_text: str) -> List[str]:
+    """Extract distinctive keywords from match_text for grep suggestions."""
+    # Look for function/class names, distinctive identifiers
+    keywords = []
+
+    # Function/method names
+    func_match = re.search(r'(?:def|function|func|fn)\s+(\w+)', match_text)
+    if func_match:
+        keywords.append(func_match.group(1))
+
+    # Class names
+    class_match = re.search(r'class\s+(\w+)', match_text)
+    if class_match:
+        keywords.append(class_match.group(1))
+
+    # Variable assignments with distinctive names
+    var_matches = re.findall(r'(\w{4,})\s*[=:]', match_text)
+    keywords.extend(var_matches[:2])
+
+    # String literals (useful for error messages, etc.)
+    string_matches = re.findall(r'["\']([^"\']{10,40})["\']', match_text)
+    keywords.extend(string_matches[:1])
+
+    # Deduplicate while preserving order
+    seen = set()
+    unique = []
+    for kw in keywords:
+        if kw.lower() not in seen:
+            seen.add(kw.lower())
+            unique.append(kw)
+
+    return unique[:3]  # Return top 3 keywords
+
+
 def generate_token_efficient_hint(
     match_text: str,
     file_content: str,
@@ -143,6 +177,7 @@ def generate_token_efficient_hint(
     - 'suggestions': Fuzzy match suggestions with line numbers (if found)
     - 'outline': File structure outline (if no good fuzzy matches)
     - 'line_count': Total lines in file
+    - 'recovery_steps': Concrete steps to recover from error
     """
     line_count = file_content.count('\n') + 1
     result = {'line_count': line_count}
@@ -153,30 +188,72 @@ def generate_token_efficient_hint(
     if suggestions:
         best_match = suggestions[0]
         result['suggestions'] = suggestions
+        # Add warning about preview limitations (per intern test feedback)
+        result['preview_warning'] = "Previews may hide whitespace differences (tabs/spaces/line endings). Always verify with read_files."
+
         if best_match['similarity'] >= 90:
             result['hint'] = (
-                f"Found very similar text ({best_match['similarity']}% match) at lines {best_match['line_start']}-{best_match['line_end']}. "
-                f"Likely a whitespace or minor difference. Use read_files to verify exact content at those lines.{error_context}"
+                f"Found very similar text ({best_match['similarity']}% character match) at lines {best_match['line_start']}-{best_match['line_end']}. "
+                f"Likely a whitespace or minor difference.{error_context}"
             )
+            result['recovery_steps'] = [
+                f"1. Call read_files with path='{file_path}', start_line={best_match['line_start']}, end_line={best_match['line_end']}",
+                "2. Compare output character-by-character with your match_text (check tabs vs spaces, trailing whitespace)",
+                "3. Copy the EXACT text from read_files output as your new match_text",
+                "4. Retry propose_and_review with corrected match_text"
+            ]
         else:
             result['hint'] = (
-                f"Found {len(suggestions)} similar block(s). Best match: {best_match['similarity']}% at lines {best_match['line_start']}-{best_match['line_end']}. "
-                f"Use read_files with start_line/end_line to verify, then retry with corrected match_text.{error_context}"
+                f"Found {len(suggestions)} similar block(s). Best: {best_match['similarity']}% at lines {best_match['line_start']}-{best_match['line_end']}.{error_context}"
             )
+            result['recovery_steps'] = [
+                f"1. Call read_files with path='{file_path}', start_line={best_match['line_start']}, end_line={best_match['line_end']}",
+                "2. Verify this is the correct code section you intended to edit",
+                "3. Copy the EXACT text from read_files output as your new match_text",
+                "4. Retry propose_and_review with corrected match_text"
+            ]
     else:
         # Strategy 2: Provide file outline when no fuzzy matches found
         outline = extract_file_outline(file_content, file_path)
+        grep_keywords = _extract_grep_keywords(match_text)
+
         if outline:
             result['outline'] = outline
-            result['hint'] = (
-                f"No similar text found in {line_count}-line file. File structure shown in 'outline'. "
-                f"Use grep_content to locate the target code, then read_files for exact content.{error_context}"
-            )
+            if grep_keywords:
+                result['suggested_grep_keywords'] = grep_keywords
+                result['hint'] = (
+                    f"No similar text found in {line_count}-line file. "
+                    f"Try grep_content with keywords: {', '.join(repr(k) for k in grep_keywords)}.{error_context}"
+                )
+                result['recovery_steps'] = [
+                    f"1. Call grep_content with pattern='{grep_keywords[0]}' to locate the code",
+                    "2. Note the line numbers from grep results",
+                    f"3. Call read_files with path='{file_path}' and the line range from grep",
+                    "4. Copy the EXACT text and retry propose_and_review"
+                ]
+            else:
+                result['hint'] = (
+                    f"No similar text found in {line_count}-line file. File structure shown in 'outline'. "
+                    f"Use grep_content to locate the target code.{error_context}"
+                )
+                result['recovery_steps'] = [
+                    "1. Review the 'outline' to identify which function/class contains your target",
+                    "2. Call grep_content with a distinctive keyword from your match_text",
+                    f"3. Call read_files with path='{file_path}' and the line range",
+                    "4. Copy the EXACT text and retry propose_and_review"
+                ]
         else:
             result['hint'] = (
-                f"No match found in {line_count}-line file. The match_text may be outdated or incorrect. "
-                f"Use grep_content to search for keywords, then read_files to get current content.{error_context}"
+                f"No match found in {line_count}-line file. The match_text may be outdated or from a different file.{error_context}"
             )
+            if grep_keywords:
+                result['suggested_grep_keywords'] = grep_keywords
+            result['recovery_steps'] = [
+                "1. Verify you're editing the correct file path",
+                f"2. Call grep_content to search for keywords from your match_text",
+                "3. Call read_files to get the current content",
+                "4. Update match_text to reflect current file state"
+            ]
 
     return result
 

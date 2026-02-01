@@ -1,8 +1,9 @@
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, List, Dict, Any
 import asyncio
 import difflib
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -11,6 +12,255 @@ from pathlib import Path
 
 # --- Configuration Constants ---
 MATCH_TEXT_MAX_LENGTH = 2000
+# Token-efficient error hint threshold - we NEVER dump full file content
+# Instead, we provide fuzzy suggestions and file outlines
+ERROR_HINT_FUZZY_THRESHOLD = 0.6  # Minimum similarity for fuzzy suggestions
+ERROR_HINT_MAX_SUGGESTIONS = 3    # Max fuzzy match suggestions to return
+ERROR_HINT_PREVIEW_LENGTH = 200   # Max chars for preview snippets
+
+
+def find_similar_blocks(match_text: str, file_content: str, cutoff: float = ERROR_HINT_FUZZY_THRESHOLD) -> List[Dict[str, Any]]:
+    """
+    Find text blocks in file that are similar to match_text using difflib.
+    Returns top matches with line numbers and previews for token-efficient hints.
+    """
+    if not match_text or not file_content:
+        return []
+
+    lines = file_content.split('\n')
+    match_lines = match_text.split('\n')
+    match_len = len(match_lines)
+
+    candidates = []
+    for i in range(max(1, len(lines) - match_len + 1)):
+        block = '\n'.join(lines[i:i + match_len])
+        ratio = difflib.SequenceMatcher(None, match_text, block).ratio()
+        if ratio >= cutoff:
+            preview = block[:ERROR_HINT_PREVIEW_LENGTH]
+            if len(block) > ERROR_HINT_PREVIEW_LENGTH:
+                preview += '...'
+            candidates.append({
+                'line_start': i + 1,
+                'line_end': i + match_len,
+                'similarity': round(ratio * 100),  # Percentage for readability
+                'preview': preview
+            })
+
+    # Return top matches sorted by similarity
+    return sorted(candidates, key=lambda x: x['similarity'], reverse=True)[:ERROR_HINT_MAX_SUGGESTIONS]
+
+
+def extract_file_outline(content: str, file_path: str = "") -> List[Dict[str, Any]]:
+    """
+    Extract structural outline of a file (classes, functions, methods).
+    Uses regex patterns that work across common languages.
+    Returns symbols with line numbers for navigation hints.
+    """
+    if not content:
+        return []
+
+    lines = content.split('\n')
+    outline = []
+
+    # Determine language from extension
+    suffix = Path(file_path).suffix.lower() if file_path else ""
+
+    # Language-specific patterns
+    patterns = []
+    if suffix in ('.py', ''):
+        patterns = [
+            (r'^class\s+(\w+)', 'class'),
+            (r'^async\s+def\s+(\w+)', 'async function'),
+            (r'^def\s+(\w+)', 'function'),
+            (r'^(\s+)async\s+def\s+(\w+)', 'async method'),
+            (r'^(\s+)def\s+(\w+)', 'method'),
+        ]
+    elif suffix in ('.js', '.ts', '.jsx', '.tsx', '.mjs'):
+        patterns = [
+            (r'^class\s+(\w+)', 'class'),
+            (r'^(?:export\s+)?(?:async\s+)?function\s+(\w+)', 'function'),
+            (r'^(?:export\s+)?const\s+(\w+)\s*=\s*(?:async\s+)?\(', 'arrow function'),
+            (r'^\s+(?:async\s+)?(\w+)\s*\([^)]*\)\s*\{', 'method'),
+        ]
+    elif suffix in ('.go',):
+        patterns = [
+            (r'^func\s+(\w+)', 'function'),
+            (r'^func\s+\([^)]+\)\s+(\w+)', 'method'),
+            (r'^type\s+(\w+)\s+struct', 'struct'),
+            (r'^type\s+(\w+)\s+interface', 'interface'),
+        ]
+    elif suffix in ('.rs',):
+        patterns = [
+            (r'^(?:pub\s+)?fn\s+(\w+)', 'function'),
+            (r'^(?:pub\s+)?struct\s+(\w+)', 'struct'),
+            (r'^(?:pub\s+)?impl\s+(\w+)', 'impl'),
+            (r'^(?:pub\s+)?trait\s+(\w+)', 'trait'),
+        ]
+    elif suffix in ('.java', '.kt', '.scala'):
+        patterns = [
+            (r'^(?:public|private|protected)?\s*class\s+(\w+)', 'class'),
+            (r'^(?:public|private|protected)?\s*interface\s+(\w+)', 'interface'),
+            (r'^\s+(?:public|private|protected)?\s*(?:static\s+)?(?:\w+\s+)?(\w+)\s*\(', 'method'),
+        ]
+    else:
+        # Generic fallback patterns
+        patterns = [
+            (r'^class\s+(\w+)', 'class'),
+            (r'^(?:def|function|func)\s+(\w+)', 'function'),
+            (r'^\s+(?:def|function)\s+(\w+)', 'method'),
+        ]
+
+    for i, line in enumerate(lines, 1):
+        for pattern, symbol_type in patterns:
+            match = re.match(pattern, line)
+            if match:
+                name = match.group(1) if match.lastindex else match.group(0)
+                # For methods, extract actual name (might be in group 2)
+                if symbol_type == 'method' and match.lastindex and match.lastindex >= 2:
+                    name = match.group(2)
+                signature = line.strip()[:100]  # Truncate long signatures
+                outline.append({
+                    'type': symbol_type,
+                    'name': name,
+                    'line': i,
+                    'signature': signature
+                })
+                if len(outline) >= 500:  # Cap the number of symbols
+                    return outline
+                break  # Only match one pattern per line
+
+    return outline
+
+
+def _extract_grep_keywords(match_text: str) -> List[str]:
+    """Extract distinctive keywords from match_text for grep suggestions."""
+    # Look for function/class names, distinctive identifiers
+    keywords = []
+
+    # Function/method names
+    func_match = re.search(r'(?:def|function|func|fn)\s+(\w+)', match_text)
+    if func_match:
+        keywords.append(func_match.group(1))
+
+    # Class names
+    class_match = re.search(r'class\s+(\w+)', match_text)
+    if class_match:
+        keywords.append(class_match.group(1))
+
+    # Variable assignments with distinctive names
+    var_matches = re.findall(r'(\w{4,})\s*[=:]', match_text)
+    keywords.extend(var_matches[:2])
+
+    # String literals (useful for error messages, etc.)
+    string_matches = re.findall(r'["\']([^"\']{10,40})["\']', match_text)
+    keywords.extend(string_matches[:1])
+
+    # Deduplicate while preserving order
+    seen = set()
+    unique = []
+    for kw in keywords:
+        if kw.lower() not in seen:
+            seen.add(kw.lower())
+            unique.append(kw)
+
+    return unique[:3]  # Return top 3 keywords
+
+
+def generate_token_efficient_hint(
+    match_text: str,
+    file_content: str,
+    file_path: str,
+    error_context: str = ""
+) -> Dict[str, Any]:
+    """
+    Generate token-efficient error hints instead of dumping full file content.
+
+    Returns a dict with:
+    - 'hint': Human-readable guidance message
+    - 'suggestions': Fuzzy match suggestions with line numbers (if found)
+    - 'outline': File structure outline (if no good fuzzy matches)
+    - 'line_count': Total lines in file
+    - 'recovery_steps': Concrete steps to recover from error
+    """
+    line_count = file_content.count('\n') + 1
+    result = {'line_count': line_count}
+
+    # Strategy 1: Find fuzzy matches
+    suggestions = find_similar_blocks(match_text, file_content)
+
+    if suggestions:
+        best_match = suggestions[0]
+        result['suggestions'] = suggestions
+        # Add warning about preview limitations (per intern test feedback)
+        result['preview_warning'] = "Previews may hide whitespace differences (tabs/spaces/line endings). Always verify with read_files."
+
+        if best_match['similarity'] >= 90:
+            result['hint'] = (
+                f"Found very similar text ({best_match['similarity']}% character match) at lines {best_match['line_start']}-{best_match['line_end']}. "
+                f"Likely a whitespace or minor difference.{error_context}"
+            )
+            result['recovery_steps'] = [
+                f"1. Call read_files with path='{file_path}', start_line={best_match['line_start']}, end_line={best_match['line_end']}",
+                "2. Compare output character-by-character with your match_text (check tabs vs spaces, trailing whitespace)",
+                "3. Copy the EXACT text from read_files output as your new match_text",
+                "4. Retry propose_and_review with corrected match_text"
+            ]
+        else:
+            result['hint'] = (
+                f"Found {len(suggestions)} similar block(s). Best: {best_match['similarity']}% at lines {best_match['line_start']}-{best_match['line_end']}.{error_context}"
+            )
+            result['recovery_steps'] = [
+                f"1. Call read_files with path='{file_path}', start_line={best_match['line_start']}, end_line={best_match['line_end']}",
+                "2. Verify this is the correct code section you intended to edit",
+                "3. Copy the EXACT text from read_files output as your new match_text",
+                "4. Retry propose_and_review with corrected match_text"
+            ]
+    else:
+        # Strategy 2: Provide file outline when no fuzzy matches found
+        outline = extract_file_outline(file_content, file_path)
+        grep_keywords = _extract_grep_keywords(match_text)
+
+        if outline:
+            result['outline'] = outline
+            if grep_keywords:
+                result['suggested_grep_keywords'] = grep_keywords
+                result['hint'] = (
+                    f"No similar text found in {line_count}-line file. "
+                    f"Try grep_content with keywords: {', '.join(repr(k) for k in grep_keywords)}.{error_context}"
+                )
+                result['recovery_steps'] = [
+                    f"1. Call grep_content with pattern='{grep_keywords[0]}' to locate the code",
+                    "2. Note the line numbers from grep results",
+                    f"3. Call read_files with path='{file_path}' and the line range from grep",
+                    "4. Copy the EXACT text and retry propose_and_review"
+                ]
+            else:
+                result['hint'] = (
+                    f"No similar text found in {line_count}-line file. File structure shown in 'outline'. "
+                    f"Use grep_content to locate the target code.{error_context}"
+                )
+                result['recovery_steps'] = [
+                    "1. Review the 'outline' to identify which function/class contains your target",
+                    "2. Call grep_content with a distinctive keyword from your match_text",
+                    f"3. Call read_files with path='{file_path}' and the line range",
+                    "4. Copy the EXACT text and retry propose_and_review"
+                ]
+        else:
+            result['hint'] = (
+                f"No match found in {line_count}-line file. The match_text may be outdated or from a different file.{error_context}"
+            )
+            if grep_keywords:
+                result['suggested_grep_keywords'] = grep_keywords
+            result['recovery_steps'] = [
+                "1. Verify you're editing the correct file path",
+                f"2. Call grep_content to search for keywords from your match_text",
+                "3. Call read_files to get the current content",
+                "4. Update match_text to reflect current file state"
+            ]
+
+    return result
+
+
 OVERWRITE_SENTINEL = "OVERWRITE_FILE"
 
 # Backward compatibility alias
@@ -178,10 +428,8 @@ async def propose_and_review_logic(
                         "error_type": "validation_error",
                         "message": f"Edit {i}: match_text found {normalized.count(mt)} times, expected 1.",
                     }
-                    line_count = content.count('\n') + 1
-                    if line_count < 5000:
-                        error_response["file_content"] = content
-                        error_response["hint"] = f"File has {line_count} lines. Content included above — use it to correct your match_text for edit {i}."
+                    hint_info = generate_token_efficient_hint(mt, content, path, f" (edit {i})")
+                    error_response.update(hint_info)
                     raise ValueError(json.dumps(error_response, indent=2))
                 normalized = normalized.replace(mt, new_s, 1) if mt else new_s
             p.write_text(normalized, encoding='utf-8')
@@ -203,12 +451,8 @@ async def propose_and_review_logic(
                     p = Path(path)
                     if p.exists():
                         content = p.read_text(encoding='utf-8')
-                        line_count = content.count('\n') + 1
-                        if line_count < 5000:
-                            error_response["file_content"] = content
-                            error_response["hint"] = f"File has {line_count} lines. Content included above — use it to correct your match_text."
-                        else:
-                            error_response["hint"] = f"File has {line_count} lines (too large to include). Re-read the file to get the current content before retrying."
+                        hint_info = generate_token_efficient_hint(match_text, content, path)
+                        error_response.update(hint_info)
                 raise ValueError(json.dumps(error_response, indent=2))
 
             if prep_result.new_content is not None:
@@ -252,10 +496,8 @@ async def propose_and_review_logic(
                             "error_type": "validation_error",
                             "message": f"Edit {i}: match_text found {occurrences} times in session content, expected 1.",
                         }
-                        line_count = staged_content.count('\n') + 1
-                        if line_count < 5000:
-                            error_response["file_content"] = staged_content
-                            error_response["hint"] = f"Session file has {line_count} lines. Content included above — use it to correct your match_text for edit {i}."
+                        hint_info = generate_token_efficient_hint(mt, staged_content, path, f" (session edit {i})")
+                        error_response.update(hint_info)
                         raise ValueError(json.dumps(error_response, indent=2))
                     normalized = normalized.replace(mt, new_s, 1)
                 else:
@@ -272,12 +514,8 @@ async def propose_and_review_logic(
                     "error_type": "validation_error",
                     "message": f"Contextual patch failed. The provided 'match_text' was found {occurrences} times in the user's last version, but expected exactly 1.",
                 }
-                line_count = staged_content.count('\n') + 1
-                if line_count < 5000:
-                    error_response["file_content"] = staged_content
-                    error_response["hint"] = f"Session file has {line_count} lines. Content included above — use it to correct your match_text."
-                else:
-                    error_response["hint"] = f"Session file has {line_count} lines (too large to include). Re-read the file to get the current content before retrying."
+                hint_info = generate_token_efficient_hint(match_text, staged_content, path, " (session)")
+                error_response.update(hint_info)
                 raise ValueError(json.dumps(error_response, indent=2))
 
             active_proposal_content = staged_content.replace(match_text, new_string, 1)
@@ -311,12 +549,8 @@ async def propose_and_review_logic(
                             "error_type": "validation_error",
                             "message": f"Edit {i}: No match found for 'match_text'.",
                         }
-                        line_count = original_content.count('\n') + 1
-                        if line_count < 5000:
-                            error_response["file_content"] = original_content
-                            error_response["hint"] = f"File has {line_count} lines. Content included above — use it to correct your match_text for edit {i}."
-                        else:
-                            error_response["hint"] = f"File has {line_count} lines (too large to include). Re-read the file to get the current content before retrying."
+                        hint_info = generate_token_efficient_hint(mt, original_content, path, f" (edit {i})")
+                        error_response.update(hint_info)
                         raise ValueError(json.dumps(error_response, indent=2))
                     if occurrences != 1:
                         if temp_dir.exists(): shutil.rmtree(temp_dir)
@@ -325,10 +559,8 @@ async def propose_and_review_logic(
                             "error_type": "validation_error",
                             "message": f"Edit {i}: Expected 1 occurrence but found {occurrences}. Provide more context in match_text to ensure uniqueness.",
                         }
-                        line_count = original_content.count('\n') + 1
-                        if line_count < 5000:
-                            error_response["file_content"] = original_content
-                            error_response["hint"] = f"File has {line_count} lines. Content included above — use it to correct your match_text for edit {i}."
+                        hint_info = generate_token_efficient_hint(mt, original_content, path, f" (edit {i})")
+                        error_response.update(hint_info)
                         raise ValueError(json.dumps(error_response, indent=2))
                     normalized = normalized.replace(mt, new_s, 1)
                 else:
@@ -353,12 +585,8 @@ async def propose_and_review_logic(
                 }
                 if prep_result.error_type == "validation_error" and original_path_obj.exists():
                     content = original_path_obj.read_text(encoding='utf-8')
-                    line_count = content.count('\n') + 1
-                    if line_count < 5000:
-                        error_response["file_content"] = content
-                        error_response["hint"] = f"File has {line_count} lines. Content included above — use it to correct your match_text."
-                    else:
-                        error_response["hint"] = f"File has {line_count} lines (too large to include). Re-read the file to get the current content before retrying."
+                    hint_info = generate_token_efficient_hint(match_text, content, path)
+                    error_response.update(hint_info)
                 raise ValueError(json.dumps(error_response, indent=2))
 
             if prep_result.original_content is not None:

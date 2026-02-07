@@ -18,6 +18,7 @@ import subprocess
 
 from .edit_tool import EditResult, RooStyleEditTool, propose_and_review_logic, MATCH_TEXT_MAX_LENGTH
 from .utils import check_ripgrep, check_jq, check_yq
+from .gsd_lite_analyzer import analyze_gsd_logs
 
 # --- Token threshold for large file warnings (conservative to enforce grep->read workflow) ---
 LARGE_FILE_TOKEN_THRESHOLD = 2000
@@ -1159,3 +1160,92 @@ def append_text(path: str, content: str) -> str:
         f.write(content)
         
     return f"Successfully appended content to '{path}'."
+
+
+@mcp.tool()
+def analyze_gsd_work_log(
+    file_path: Annotated[
+        str,
+        Field(
+            default="gsd-lite/WORK.md",
+            description="Path to the GSD-Lite WORK.md file. Defaults to 'gsd-lite/WORK.md'."
+        )
+    ] = "gsd-lite/WORK.md",
+    output_format: Annotated[
+        Literal["json", "table"],
+        Field(
+            default="json",
+            description="Output format: 'json' for machine-readable structured data, 'table' for human-readable summary."
+        )
+    ] = "json"
+) -> str:
+    """
+    Analyze a GSD-Lite WORK.md file to detect semantic signals for housekeeping.
+
+    This tool implements context-aware signal detection that avoids false positives
+    when documentation contains examples of the patterns being detected (the "Quine Paradox").
+
+    **What it detects:**
+
+    **Tier 1 Signals (High Confidence - Auto-Flag):**
+    - `~~strikethrough titles~~` in log headers
+    - `SUPERSEDED BY: LOG-XXX` tags
+    - `[DEPRECATED]`, `[OBSOLETE]`, `[ARCHIVED]` markers
+    - Status fields indicating obsolete/abandoned
+
+    **Tier 2 Signals (Medium Confidence - Review Needed):**
+    - `Depends On:` references
+    - Words like "supersedes", "replaces", "pivot"
+    - Phrases like "hit a wall", "decided not to"
+
+    **False Positive Prevention:**
+    - Code blocks (```...```) are masked before scanning
+    - Inline code (`...`) is masked before scanning
+    - Header-only signals (strikethrough) only match in `### [LOG-XXX]` lines
+
+    **Output (JSON format):**
+    ```json
+    {
+      "summary": {
+        "total_tokens": 65420,
+        "total_logs": 24,
+        "tier_1_flags": 3,
+        "tier_2_flags": 12
+      },
+      "logs": [
+        {
+          "log_id": "LOG-018",
+          "type": "DECISION",
+          "task": "PHASE-002",
+          "tokens": 1200,
+          "lines": [3213, 3287],
+          "signals": {
+            "tier_1": ["strikethrough: ~~Pivot to Public Data~~ (L3213)"],
+            "tier_2": ["depends_on: LOG-017 (L3220)"]
+          }
+        }
+      ]
+    }
+    ```
+
+    **Workflow Example:**
+    1. Run analysis: `analyze_gsd_work_log("gsd-lite/WORK.md")`
+    2. Review Tier 1 flags (likely superseded)
+    3. Investigate Tier 2 flags with user
+    4. Use results to guide archival decisions
+    """
+    validated_path = validate_path(file_path)
+    
+    try:
+        result = analyze_gsd_logs(str(validated_path), format=output_format)
+        
+        if isinstance(result, dict):
+            return json.dumps(result, indent=2)
+        else:
+            return result
+            
+    except FileNotFoundError:
+        return f"Error: File not found at '{file_path}'. Ensure the path is correct and the file exists."
+    except Exception as e:
+        return f"Error analyzing file: {str(e)}"
+    

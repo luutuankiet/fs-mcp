@@ -6,8 +6,8 @@ import shutil
 
 @pytest.fixture
 def temp_env(tmp_path):
-    """Sets up a safe temporary directory environment"""
-    server.initialize([str(tmp_path)])
+    """Sets up a safe temporary directory environment with all tools enabled for testing"""
+    server.initialize([str(tmp_path)], use_all_tools=True)
     return tmp_path
 
 def test_security_barrier(temp_env):

@@ -89,9 +89,48 @@ IS_RIPGREP_AVAILABLE = False
 IS_JQ_AVAILABLE = False
 IS_YQ_AVAILABLE = False
 
+# --- Tool Tier Configuration ---
+# Core tier: GSD-Lite optimized toolset (safe edit, grep-first, structured queries)
+# These are the tools exposed by default. Pass --all to expose everything.
+CORE_TOOLS = {
+    "list_allowed_directories",
+    "read_files",
+    "read_media_file",
+    "create_directory",
+    "list_directory_with_sizes",
+    "search_files",
+    "get_file_info",
+    "directory_tree",
+    "propose_and_review",
+    "commit_review",
+    "grep_content",
+    "query_json",
+    "query_yaml",
+    "analyze_gsd_work_log",
+}
 
-def initialize(directories: List[str]):
-    """Initialize the allowed directories and check for VS Code CLI."""
+# Tools excluded from core tier (available with --all)
+# - write_file: use propose_and_review for safe editing
+# - list_directory: use directory_tree or list_directory_with_sizes
+# - move_file: rarely needed, potentially destructive
+# - append_text: use propose_and_review for safe editing
+# - grounding_search: external dependency, not core filesystem operation
+EXCLUDED_FROM_CORE = {
+    "write_file",
+    "list_directory",
+    "move_file",
+    "append_text",
+    "grounding_search",
+}
+
+
+def initialize(directories: List[str], use_all_tools: bool = False):
+    """Initialize the allowed directories, check for dependencies, and configure tool tier.
+    
+    Args:
+        directories: List of allowed directory paths
+        use_all_tools: If False (default), expose only CORE_TOOLS. If True, expose all tools.
+    """
     global ALLOWED_DIRS, USER_ACCESSIBLE_DIRS, IS_VSCODE_CLI_AVAILABLE, IS_RIPGREP_AVAILABLE, IS_JQ_AVAILABLE, IS_YQ_AVAILABLE
     ALLOWED_DIRS.clear()
     USER_ACCESSIBLE_DIRS.clear()
@@ -134,12 +173,40 @@ def initialize(directories: List[str]):
         if cwd not in ALLOWED_DIRS:
             ALLOWED_DIRS.append(cwd)
     
+    # Filter tools based on tier (before applying schema transforms)
+    _apply_tool_tier_filter(use_all_tools)
+    
     # Apply Gemini-compatible schema transforms to all registered tools
     # This ensures schemas work with Gemini, Claude, and GPT without modification
     # Reference: LOG-001 (root cause), LOG-003 (implementation plan)
     _apply_gemini_schema_transforms()
             
     return USER_ACCESSIBLE_DIRS
+
+
+def _apply_tool_tier_filter(use_all_tools: bool):
+    """
+    Filter registered tools based on the selected tier.
+    
+    By default (use_all_tools=False), only CORE_TOOLS are exposed.
+    Pass --all to expose everything.
+    """
+    if use_all_tools:
+        print("Tool tier: ALL (exposing all tools)")
+        return  # Keep all tools
+    
+    tool_manager = mcp._tool_manager
+    tools_to_remove = []
+    
+    for tool_name in tool_manager._tools:
+        if tool_name not in CORE_TOOLS:
+            tools_to_remove.append(tool_name)
+    
+    for tool_name in tools_to_remove:
+        del tool_manager._tools[tool_name]
+    
+    if tools_to_remove:
+        print(f"Tool tier: CORE (excluded: {', '.join(sorted(tools_to_remove))})")
 
 
 def _apply_gemini_schema_transforms():
@@ -707,7 +774,6 @@ def directory_tree(path: str, max_depth: int = 4, exclude_dirs: Optional[List[st
 
 
 # --- Interactive Human-in-the-Loop Tools ---
-APPROVAL_KEYWORD = "##APPROVE##"
 
 
 
@@ -744,7 +810,7 @@ async def propose_and_review(
     ] = False
 ) -> str:
     """
-    Edit a file with human review. Returns APPROVE or REVIEW response.
+    Edit a file with human review. Returns COMMITTED or REVIEW response.
 
     ════════════════════════════════════════════════════════════════════
     QUICK REFERENCE (copy these patterns)
@@ -753,7 +819,6 @@ async def propose_and_review(
     EDIT FILE:    propose_and_review(path="file.py", match_text="old", new_string="new")
     NEW FILE:     propose_and_review(path="new.py", match_text="", new_string="content")
     BATCH EDIT:   propose_and_review(path="file.py", edits=[{"match_text":"a","new_string":"b"}])
-    SAVE CHANGES: commit_review(session_path="/tmp/xyz", original_path="file.py")
 
     ════════════════════════════════════════════════════════════════════
     WORKFLOW: READ FILE → COPY EXACT TEXT → PASTE AS match_text
@@ -771,7 +836,7 @@ async def propose_and_review(
     RESPONSE HANDLING
     ════════════════════════════════════════════════════════════════════
 
-    IF "APPROVE": Call commit_review(session_path, path) to save.
+    IF "COMMITTED": File has been written. No further action needed.
 
     IF "REVIEW": User edited your proposal. Response contains:
       - session_path: Pass in your next call
@@ -789,7 +854,6 @@ async def propose_and_review(
     ════════════════════════════════════════════════════════════════════
     - Paths: relative ("src/main.py") or absolute both work
     - expected_replacements=1 means match must be unique (errors if 0 or 2+ found)
-    - Sessions stay valid until server restarts
     - user_feedback_diff is a unified diff showing exactly what user changed
     """
     return await propose_and_review_logic(
@@ -1271,3 +1335,4 @@ def analyze_gsd_work_log(
         return f"Error: File not found at '{file_path}'. Ensure the path is correct and the file exists."
     except Exception as e:
         return f"Error analyzing file: {str(e)}"
+    

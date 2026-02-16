@@ -11,6 +11,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", required=True)
     parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--all", action="store_true", dest="use_all_tools",
+                       help="Expose all tools. By default, only core tools are exposed.")
     parser.add_argument("dirs", nargs="*")
     args = parser.parse_args()
     
@@ -26,7 +28,7 @@ def main():
     ]
     
     try:
-        server.initialize(args.dirs)
+        server.initialize(args.dirs, use_all_tools=args.use_all_tools)
         # Pass the middleware to the run command
         server.mcp.run(
             transport="streamable-http",

@@ -38,9 +38,9 @@ from schema_compat.transforms import transform_for_gemini
 
 @pytest.fixture(scope="module")
 def initialized_server():
-    """Initialize the server once for all tests in this module."""
+    """Initialize the server once for all tests in this module with all tools enabled."""
     with tempfile.TemporaryDirectory() as tmp:
-        server.initialize([tmp])
+        server.initialize([tmp], use_all_tools=True)
         yield server.mcp
 
 

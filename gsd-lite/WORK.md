@@ -5,11 +5,11 @@
 ## 1. Current Understanding (Read First)
 
 <current_mode>
-discuss (SCHEMA-DEBUG complete — reviewing future work)
+idle (feature complete)
 </current_mode>
 
 <active_task>
-None — SCHEMA-DEBUG task completed successfully (LOG-006)
+None — LOG-008 (Core Tier) completed
 </active_task>
 
 <parked_tasks>
@@ -28,6 +28,8 @@ fs-mcp should work seamlessly with all major AI providers (Claude, Gemini, GPT) 
 - LOG-003: Implementation plan finalized — Option B (runtime post-processing), unconditional transforms, jsonref+google-genai as required deps
 - LOG-003: Architecture decided — scripts/schema_compat/ for tooling, src/fs_mcp/gemini_compat.py for production transforms
 - LOG-006: Fix verified — Live Gemini test shows FileReadRequest structure fully visible; CI tests pass (21/21)
+- LOG-007: Auto-Commit Approval — Reduced friction by detecting "save without changes" as implicit approval, saving 1 LLM call per file edit
+- LOG-008: Core Tier Tooling — Default to "safe" GSD-Lite toolset (14 tools), hide raw/unsafe tools unless --all flag used
 </decisions>
 
 <blockers>
@@ -50,6 +52,7 @@ Discuss future work: (1) GitHub CI integration, (2) Test cleanup audit, (3) Refe
 - LOG-001: Schema Dereferencing — MCP tools with nested Pydantic models require `$ref` inlining for Gemini compatibility
 - LOG-002: Transformation Pipeline — Extract → Transform → Validate → Compare architecture for schema compatibility (see LOG-002 Section 10)
 - LOG-003: Unconditional Transforms — Apply Gemini-compat transforms to all schemas at registration (lowest common denominator approach)
+- LOG-008: Safe by Default — Default toolset excludes raw `write_file` and destructive ops; requires explicit `--all` to access unsafe tools
 
 ### Tooling Decisions
 - LOG-003: schema_compat Package — `scripts/schema_compat/` for CLI tooling; `src/fs_mcp/gemini_compat.py` for production transforms
@@ -66,6 +69,8 @@ Discuss future work: (1) GitHub CI integration, (2) Test cleanup audit, (3) Refe
 - LOG-004: CLI Tooling Complete — `scripts/schema_compat/` with validator, transforms, extractor, comparator, CLI
 - LOG-005: CI Guard Tests — `tests/test_gemini_schema_compat.py` with 21 tests covering all forbidden patterns
 - LOG-006: Production Integration — `src/fs_mcp/gemini_compat.py` integrated into `server.py`; live Gemini verification passed
+- LOG-007: UX Optimization — `propose_and_review` now auto-commits on approval (saved without changes), removing explicit `commit_review` step
+- LOG-008: Core Tier Implementation — `server.py` filtering, `CORE_TOOLS` constant, and `--all` CLI flag implemented
 
 ---
 
@@ -1685,3 +1690,162 @@ graph LR
 2. Read LOG-002 Section 4 for forbidden patterns (what Gemini rejects)
 3. Read LOG-003 Section 3 for architecture (where code lives)
 4. LOG-004, LOG-005, LOG-006 are execution logs (how it was built)
+
+---
+
+### [LOG-007] - [FEATURE] - Auto-Commit on Approval - Task: UX-IMPROVEMENT
+
+**Date:** 2026-02-17
+**Session:** Implementing friction-reduction workflow for code edits
+**Dependencies:** LOG-006 (production codebase state)
+
+---
+
+#### 1. Executive Summary
+
+**Problem:** The `propose_and_review` workflow required 3 LLM turns for a successful edit: (1) Propose → (2) Review (Approve) → (3) Commit. The final step was a "dumb" tool call (`commit_review`) that consumed tokens and time without adding intelligence.
+
+**Solution:** Implemented **Auto-Commit on Approval**. When the user saves the proposed file **without changes**, the server infers approval and commits immediately, returning `COMMITTED` status.
+
+**Impact:**
+- **33% reduction in LLM turns** for successful edits (2 turns instead of 3).
+- **Zero friction** for users (just Cmd+S + Close Tab).
+- **Backwards compatible** with "Review" flow (edits still trigger `REVIEW` status).
+
+---
+
+#### 2. Workflow State Changes
+
+**Old Flow:**
+```mermaid
+sequenceDiagram
+    participant Agent
+    participant Server
+    participant User
+
+    Agent->>Server: propose_and_review()
+    Server->>User: Launch VS Code Diff
+    User->>Server: Save (Exact Match)
+    Server-->>Agent: "APPROVE" (waiting for commit)
+    Agent->>Server: commit_review()
+    Server-->>Agent: "Changes written"
+```
+
+**New Flow:**
+```mermaid
+sequenceDiagram
+    participant Agent
+    participant Server
+    participant User
+
+    Agent->>Server: propose_and_review()
+    Server->>User: Launch VS Code Diff
+    User->>Server: Save (Exact Match)
+    Server->>Server: Auto-Commit (Write to original)
+    Server-->>Agent: "COMMITTED" (File written)
+    Note right of Agent: Done! No extra call needed.
+```
+
+---
+
+#### 3. Implementation Details
+
+**File:** `src/fs_mcp/edit_tool.py`
+
+Changed approval detection from "double newline" to "exact match":
+
+```python
+# Before
+if user_edited_content.endswith("\n\n"):
+    response["user_action"] = "APPROVE"
+
+# After
+proposal_text = active_proposal_content
+is_approved = user_edited_content == proposal_text
+
+if is_approved:
+    # 1. Commit to original file
+    original_file.write_text(user_edited_content)
+    # 2. Cleanup session
+    shutil.rmtree(temp_dir)
+    # 3. Return final status
+    response["user_action"] = "COMMITTED"
+```
+
+**File:** `src/fs_mcp/server.py`
+
+Updated docstring instructions to reflect the new state:
+```python
+IF "COMMITTED": File has been written. No further action needed.
+```
+
+---
+
+#### 4. Regression Tests
+
+Added `tests/test_propose_and_review_validation.py::TestAutoCommitOnApproval`:
+- Verifies approval logic (mocked)
+- Verifies session path removal on commit
+- Verifies review path (edit != proposal) retains session
+
+---
+
+#### 5. Dependencies Summary
+
+```mermaid
+graph LR
+    LOG006["LOG-006<br/>Production Baseline"] --> LOG007["LOG-007<br/>Auto-Commit UX"]
+    style LOG007 fill:#90EE90
+```
+
+---
+
+### [LOG-008] - [FEATURE] - Core Tier Tool Filtering - Task: CORE-TIER
+
+**Date:** 2026-02-17
+**Session:** Aligning fs-mcp with GSD-Lite philosophy (safe by default)
+**Files:** src/fs_mcp/server.py, src/fs_mcp/__main__.py, src/fs_mcp/http_runner.py
+
+#### 1. Context
+The user requested an opinionated "Core Tier" of tools to match the GSD-Lite workflow (safe edits, grep-first, structured queries). Previously, this required passing multiple `--ignore-tool` flags in client configuration.
+
+#### 2. Decision
+**Pattern:** "Safe by Default, Opt-in for All"
+- **Core Tier (Default):** Exposes 14 safe/structured tools (e.g., `propose_and_review`, `grep_content`, `read_files`).
+- **All Tier (Opt-in):** Exposes all tools including raw/redundant ones (e.g., `write_file`, `list_directory`) via `--all` flag.
+
+**Changes:**
+- Defined `CORE_TOOLS` constant in `server.py` containing the GSD-Lite toolset.
+- Implemented `_apply_tool_tier_filter` to remove non-core tools from the registry at initialization.
+- Added `--all` CLI flag to `__main__.py` and `http_runner.py`.
+
+#### 3. Impact
+- **Simplified Config:** Client configuration now requires only the basic command (no exclude lists).
+- **Safety:** Raw `write_file` is disabled by default, enforcing the human-in-the-loop `propose_and_review` workflow.
+- **Focus:** Reduces tool noise for agents, encouraging the use of higher-level tools (`directory_tree` over `list_directory`).
+
+#### 4. Toolset Definition
+
+**Core Tier (Default):**
+- `list_allowed_directories`
+- `read_files` (Safe, section-aware reading)
+- `read_media_file`
+- `create_directory`
+- `list_directory_with_sizes`
+- `search_files`
+- `get_file_info`
+- `directory_tree` (Structured recursive listing)
+- `propose_and_review` (Safe HITL editing)
+- `commit_review`
+- `grep_content` (Ripgrep with hints)
+- `query_json` / `query_yaml` (Structured querying)
+- `analyze_gsd_work_log`
+
+**Excluded (Requires `--all`):**
+- `write_file` (Unsafe raw write)
+- `list_directory` (Redundant, use `directory_tree`)
+- `move_file` (Potentially destructive)
+- `append_text` (Use `propose_and_review`)
+- `grounding_search` (External dependency)
+
+---

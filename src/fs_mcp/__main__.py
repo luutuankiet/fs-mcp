@@ -43,6 +43,11 @@ def main():
     http_group.add_argument("--http-host", default="0.0.0.0", help="Host for the background HTTP server.")
     http_group.add_argument("--http-port", type=int, default=8124, help="Port for the background HTTP server.")
 
+    # Tool tier options
+    tier_group = parser.add_argument_group('Tool Tier Options')
+    tier_group.add_argument("--all", action="store_true", dest="use_all_tools",
+                           help="Expose all tools. By default, only core tools are exposed (GSD-Lite optimized).")
+
     # Common args
     parser.add_argument("dirs", nargs="*", help="Allowed directories (applies to all server modes).")
     
@@ -58,8 +63,10 @@ def main():
                 sys.executable, "-m", "fs_mcp.http_runner",
                 "--host", args.http_host,
                 "--port", str(args.http_port),
-                *dirs
             ]
+            if args.use_all_tools:
+                http_cmd.append("--all")
+            http_cmd.extend(dirs)
             print(f"🚀 Launching background HTTP MCP server process on http://{args.http_host}:{args.http_port}", file=sys.stderr)
             
             # Use Popen to start the process without blocking.
@@ -98,7 +105,7 @@ def main():
             # Default: run the original stdio server. This should be a direct import.
             from fs_mcp import server
             print("🚀 Launching Stdio MCP server", file=sys.stderr)
-            server.initialize(dirs)
+            server.initialize(dirs, use_all_tools=args.use_all_tools)
             server.mcp.run()
 
     except KeyboardInterrupt:

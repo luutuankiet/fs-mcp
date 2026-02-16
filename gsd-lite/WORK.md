@@ -34,7 +34,7 @@ None. Ready to execute.
 </blockers>
 
 <next_action>
-Execute Phase 1: Create scripts/schema_compat/ directory and implement extractor.py, transforms.py, validator.py, reporter.py, cli.py
+Execute Phase 2: Implement tests/test_gemini_schema_compat.py (CI validator)
 </next_action>
 
 ---
@@ -1290,3 +1290,93 @@ These items are explicitly deferred:
 
 **Tags:** #plan #gemini #schema #implementation #ci #tooling
 
+
+
+### [LOG-004] - [EXEC] - Implemented Schema Compatibility Tooling (Phase 1) - Task: SCHEMA-DEBUG
+
+**Date:** 2026-02-16
+**Session:** Implementation of scripts/schema_compat/ package
+**Files:** scripts/schema_compat/*
+
+---
+
+#### 1. Executive Summary
+
+**Work:** Implemented the full CLI toolset for identifying, validating, and transforming MCP tool schemas for Gemini compatibility.
+**Outcome:** We now have programmatic capability to detect the "forbidden patterns" (like `$ref`, `$defs`) that break Gemini, and a transformation pipeline to fix them.
+
+**Key Components Implemented:**
+1. `extractor.py`: Extracts raw Pydantic schemas from running server
+2. `transforms.py`: Implements 22 transformation patterns (dereferencing, cleanup, type fixes)
+3. `validator.py`: Detects forbidden patterns with severity levels
+4. `reporter.py`: Generates JSON reports + human-readable terminal output
+5. `cli.py`: Unified entry point (`check`, `diff`, `transform`)
+
+---
+
+#### 2. Technical Details
+
+**The Transformation Pipeline:**
+Implemented as a pure function `transform_for_gemini(schema) -> (new_schema, changes)`:
+1. **Dereference `$ref`**: Uses `jsonref` to inline definitions (CRITICAL fix for LOG-001)
+2. **Cleanup**: Removes `$defs`, `$id`, `$schema`
+3. **Union Types**: Converts `anyOf[T, null]` → `{type: T, nullable: true}`
+4. **Forbidden Keys**: Removes `default`, `title`, `propertyOrdering`
+5. **Type Normalization**: `string` → `STRING` (for consistency with Gemini debug output)
+
+**The Validator:**
+Detects 22 specific patterns from LOG-002, categorized by severity:
+- **CRITICAL:** `$ref`, `$defs` (Causes total argument loss)
+- **MEDIUM:** `title`, `default` (Causes API errors)
+- **LOW:** `const`, `if/then` (Spec compliance)
+
+---
+
+#### 3. Next Steps (Phase 2)
+
+Now that the tooling exists, we need to:
+1. Create `tests/test_gemini_schema_compat.py` to run this validator in CI
+2. Add `jsonref` as a project dependency
+3. Integrate the transform logic into `server.py`
+
+---
+
+### [LOG-005] - [EXEC] - Created CI Guard Tests (Phase 2.1) - Task: SCHEMA-DEBUG
+
+**Timestamp:** 2026-02-17
+**Files:** tests/test_gemini_schema_compat.py, pyproject.toml
+
+---
+
+#### 1. Work Completed
+
+**Created `tests/test_gemini_schema_compat.py`:**
+Comprehensive CI guard that fails if any tool schema contains Gemini-incompatible patterns.
+
+**Test Classes:**
+1. `TestNoForbiddenPatterns` — Fast-fail tests for $ref, $defs, title, default
+2. `TestCriticalToolsCompatible` — Parametrized validation for critical tools (read_files, propose_and_review, etc.)
+3. `TestValidatorCoversAllPatterns` — Meta-tests ensuring validator works
+4. `TestTransformProducesValidSchemas` — Tests transform pipeline itself
+5. `TestAllToolsPassFullValidation` — Ultimate guard: zero critical/medium issues
+6. `TestRegressionLOG001` — Specific regression for the FileReadRequest $ref bug
+
+**Dependency Added (by user):**
+`jsonref>=1.1.0` added to pyproject.toml dependencies.
+
+---
+
+#### 2. Expected Behavior
+
+**These tests will FAIL until Phase 2.2/2.3:**
+The CI guard is intentionally designed to fail-fast. Current tool schemas still contain $ref, $defs, title, default etc.
+
+Phase 2.2/2.3 will integrate the transforms into `server.py`, making the schemas Gemini-compatible and turning tests green.
+
+---
+
+#### 3. Next Steps
+
+1. **Phase 2.2:** Create `src/fs_mcp/gemini_compat.py` — production transform module
+2. **Phase 2.3:** Integrate transforms into `server.py` at tool registration time
+3. Run tests to verify all pass

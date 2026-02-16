@@ -241,8 +241,8 @@ class TestTransformProducesValidSchemas:
         
         assert "$ref" not in json.dumps(transformed), "Transform failed to inline $ref"
         assert "$defs" not in transformed, "Transform failed to remove $defs"
-        # The inlined content should be present
-        assert transformed["properties"]["item"]["type"] == "string"
+        # The inlined content should be present (transforms may uppercase types)
+        assert transformed["properties"]["item"]["type"].lower() == "string"
     
     def test_transform_removes_title(self):
         """Transform must remove title."""

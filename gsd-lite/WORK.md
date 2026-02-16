@@ -5,11 +5,11 @@
 ## 1. Current Understanding (Read First)
 
 <current_mode>
-execution (implementing Gemini schema compatibility tooling)
+discuss (SCHEMA-DEBUG complete — reviewing future work)
 </current_mode>
 
 <active_task>
-Task: SCHEMA-DEBUG - Implement schema_compat tooling and fix fs-mcp for Gemini compatibility
+None — SCHEMA-DEBUG task completed successfully (LOG-006)
 </active_task>
 
 <parked_tasks>
@@ -27,14 +27,15 @@ fs-mcp should work seamlessly with all major AI providers (Claude, Gemini, GPT) 
 - LOG-002: Live evidence captured — Gemini debug shows `$ref` degrades to STRING, losing entire FileReadRequest structure
 - LOG-003: Implementation plan finalized — Option B (runtime post-processing), unconditional transforms, jsonref+google-genai as required deps
 - LOG-003: Architecture decided — scripts/schema_compat/ for tooling, src/fs_mcp/gemini_compat.py for production transforms
+- LOG-006: Fix verified — Live Gemini test shows FileReadRequest structure fully visible; CI tests pass (21/21)
 </decisions>
 
 <blockers>
-None. Ready to execute.
+None
 </blockers>
 
 <next_action>
-Execute Phase 2: Implement tests/test_gemini_schema_compat.py (CI validator)
+Discuss future work: (1) GitHub CI integration, (2) Test cleanup audit, (3) Reference implementation / standalone package
 </next_action>
 
 ---
@@ -60,6 +61,11 @@ Execute Phase 2: Implement tests/test_gemini_schema_compat.py (CI validator)
 
 ### Maintenance Decisions
 - LOG-002: Documentation Strategy — Version-pin Gemini spec, periodic audits, encode rules in CI tests (see LOG-002 Section 9)
+
+### Implementation Milestones
+- LOG-004: CLI Tooling Complete — `scripts/schema_compat/` with validator, transforms, extractor, comparator, CLI
+- LOG-005: CI Guard Tests — `tests/test_gemini_schema_compat.py` with 21 tests covering all forbidden patterns
+- LOG-006: Production Integration — `src/fs_mcp/gemini_compat.py` integrated into `server.py`; live Gemini verification passed
 
 ---
 
@@ -1377,6 +1383,305 @@ Phase 2.2/2.3 will integrate the transforms into `server.py`, making the schemas
 
 #### 3. Next Steps
 
-1. **Phase 2.2:** Create `src/fs_mcp/gemini_compat.py` — production transform module
-2. **Phase 2.3:** Integrate transforms into `server.py` at tool registration time
-3. Run tests to verify all pass
+1. **Phase 2.2:** Create `src/fs_mcp/gemini_compat.py` — production transform module ✅ (LOG-006)
+2. **Phase 2.3:** Integrate transforms into `server.py` at tool registration time ✅ (LOG-006)
+3. Run tests to verify all pass ✅ (LOG-006)
+
+---
+
+### [LOG-006] - [MILESTONE] - Schema Compatibility Fix Complete — Production Integration & Live Verification - Task: SCHEMA-DEBUG
+
+**Timestamp:** 2026-02-17
+**Files Changed:** 
+- `src/fs_mcp/gemini_compat.py` (NEW — 280 lines)
+- `src/fs_mcp/server.py` (MODIFIED — +25 lines)
+- `tests/test_gemini_schema_compat.py` (MODIFIED — test expectation fix)
+
+**Dependencies:** LOG-001 (root cause), LOG-002 (spec), LOG-003 (plan), LOG-004 (tooling), LOG-005 (CI tests)
+
+---
+
+#### 1. Executive Summary
+
+**The Problem (from LOG-001):** Gemini models failed to call MCP tools with nested Pydantic models because JSON Schema `$ref` references were never resolved. Gemini degraded unresolved `$ref` to `STRING` type, causing `FileReadRequest` objects to become unusable strings.
+
+**The Fix:** Created `gemini_compat.py` — a production transform module that converts all tool schemas to Gemini-compatible format at registration time. This is the "lowest common denominator" approach: if a schema works with Gemini, it works everywhere.
+
+**Evidence of Fix (Live Model Test):**
+
+| Before | After |
+|--------|-------|
+| `"items": {"type": "STRING"}` | `"items": {"path": String, "start_line": Integer, ...}` |
+| Model sends: `["file.md"]` ❌ | Model sends: `[{"path": "file.md", "start_line": 10}]` ✅ |
+
+---
+
+#### 2. Implementation Details
+
+##### 2.1 The Production Transform Module
+
+**File:** `src/fs_mcp/gemini_compat.py`
+
+**Core Function:**
+```python
+def make_gemini_compatible(schema: dict) -> dict:
+    """
+    Transform a JSON Schema to be Gemini-compatible.
+    
+    Transformations applied (in order):
+    1. Dereference all $ref using jsonref
+    2. Remove $defs, $id, $schema
+    3. Convert anyOf[T, null] → {type: T, nullable: true}
+    4. Convert const → enum
+    5. Convert exclusiveMinimum/Maximum → minimum/maximum
+    6. Remove forbidden keys: title, default, additionalProperties, etc.
+    7. Remove conditional schemas: if/then/else
+    """
+```
+
+**Why This Order Matters:**
+1. `$ref` dereferencing MUST be first — otherwise we'd be removing keys from schemas we can't see
+2. `$defs` removal MUST follow dereferencing — they're only useful while `$ref` exists
+3. `anyOf` handling before forbidden key removal — we need to see the structure to convert it
+
+**Key Implementation Decisions:**
+
+| Decision | Rationale | Source |
+|----------|-----------|--------|
+| Use `jsonref` library | Battle-tested JSON reference resolution; handles circular refs | LOG-003 Section 4.2 |
+| Unconditional transforms | "Lowest common denominator" — Gemini-safe = universally safe | LOG-003 Section 4.3 |
+| No logging in production | CLI tooling (`scripts/schema_compat/`) logs changes; production code is silent | LOG-003 Section 3.6 |
+
+##### 2.2 Server Integration
+
+**File:** `src/fs_mcp/server.py`
+
+**Integration Point:** End of `initialize()` function (lines 136-137)
+
+```python
+# In initialize(), after all directories are set up:
+_apply_gemini_schema_transforms()
+
+def _apply_gemini_schema_transforms():
+    """
+    Transform all tool schemas to be Gemini-compatible.
+    
+    Called at the end of initialize() to post-process all registered tools.
+    """
+    tool_manager = mcp._tool_manager
+    for tool_name, tool in tool_manager._tools.items():
+        if tool.parameters:
+            tool.parameters = make_gemini_compatible(tool.parameters)
+```
+
+**Why `initialize()` and not decorator-time?**
+- Tools are registered via `@mcp.tool()` decorators at module load time
+- By the time `initialize()` runs, ALL tools exist in the registry
+- This is the single point where we can transform everything at once
+
+```mermaid
+sequenceDiagram
+    participant User as User/CLI
+    participant Main as __main__.py
+    participant Server as server.py
+    participant Compat as gemini_compat.py
+    participant FastMCP as FastMCP Registry
+
+    User->>Main: fs-mcp /path/to/dir
+    Main->>Server: initialize(["/path/to/dir"])
+    Note over Server: Setup directories, check binaries
+    Server->>Server: _apply_gemini_schema_transforms()
+    loop For each registered tool
+        Server->>FastMCP: Get tool.parameters
+        Server->>Compat: make_gemini_compatible(schema)
+        Compat-->>Server: Transformed schema
+        Server->>FastMCP: Update tool.parameters
+    end
+    Server-->>Main: Ready
+    Note over FastMCP: All schemas now Gemini-compatible
+```
+
+---
+
+#### 3. Verification Evidence
+
+##### 3.1 CI Test Results
+
+**Command:** `uv run pytest tests/test_gemini_schema_compat.py`
+
+**Result:** 21 passed ✅
+
+**Key Tests That Now Pass:**
+| Test | What It Verifies |
+|------|------------------|
+| `test_no_ref_in_any_schema` | Zero `$ref` in any tool schema |
+| `test_no_defs_in_any_schema` | Zero `$defs` blocks remaining |
+| `test_read_files_items_is_not_ref` | The exact LOG-001 bug is fixed |
+| `test_all_tools_have_zero_critical_issues` | Full validator sweep passes |
+
+##### 3.2 Live Model Test (Gemini)
+
+**Method:** User ran fs-mcp with live Gemini model and asked for schema dump.
+
+**Before Fix (from LOG-001):**
+```json
+{
+  "files": {
+    "type": "ARRAY",
+    "items": {
+      "type": "STRING"  // ❌ FileReadRequest completely lost!
+    }
+  }
+}
+```
+
+**After Fix (live capture):**
+```markdown
+* `files` (Array of Objects, Required):
+    * `path` (String, Required): The path to the file to read.
+    * `start_line` (Integer): The 1-based line number to start reading from.
+    * `end_line` (Integer): The 1-based line number to stop reading at.
+    * `read_to_next_pattern` (String): A regex pattern for section-aware reading.
+    * `head` (Integer): Number of lines to read from the beginning.
+    * `tail` (Integer): Number of lines to read from the end.
+```
+
+**Conclusion:** The full `FileReadRequest` structure is now visible to Gemini. The model can use all advanced reading modes (head/tail, line ranges, section-aware patterns).
+
+---
+
+#### 4. Files Changed (Exact Diffs)
+
+##### 4.1 New File: `src/fs_mcp/gemini_compat.py`
+
+**Size:** ~280 lines
+**Key Exports:** `make_gemini_compatible(schema: dict) -> dict`
+
+**Structure:**
+```
+gemini_compat.py
+├── make_gemini_compatible()      # Main entry point
+├── _dereference_refs()           # Critical: inline $ref using jsonref
+├── _remove_defs()                # Remove $defs after dereferencing
+├── _handle_union_types()         # anyOf[T,null] → nullable
+├── _convert_const_to_enum()      # const → enum[value]
+├── _handle_exclusive_bounds()    # exclusiveMin → minimum
+├── _remove_forbidden_keys()      # title, default, etc.
+├── _remove_conditional_schemas() # if/then/else
+└── Helper functions              # _is_null_type, _contains_key, _deep_dict, _merge_schemas
+```
+
+##### 4.2 Modified: `src/fs_mcp/server.py`
+
+**Lines Added:** 136-159 (approx)
+
+**Import Added:**
+```python
+from .gemini_compat import make_gemini_compatible
+```
+
+**Function Added:**
+```python
+def _apply_gemini_schema_transforms():
+    tool_manager = mcp._tool_manager
+    for tool_name, tool in tool_manager._tools.items():
+        if tool.parameters:
+            tool.parameters = make_gemini_compatible(tool.parameters)
+```
+
+**Call Site:** End of `initialize()`, before `return USER_ACCESSIBLE_DIRS`
+
+##### 4.3 Modified: `tests/test_gemini_schema_compat.py`
+
+**Line Changed:** 245
+
+**Before:**
+```python
+assert transformed["properties"]["item"]["type"] == "string"
+```
+
+**After:**
+```python
+assert transformed["properties"]["item"]["type"].lower() == "string"
+```
+
+**Reason:** The `scripts/schema_compat/transforms.py` (used by tests) uppercases types for Gemini consistency (`string` → `STRING`). The test now accepts either case.
+
+---
+
+#### 5. Architecture Summary
+
+```mermaid
+flowchart TB
+    subgraph "Module Load Time"
+        A["@mcp.tool() decorators"] --> B["FastMCP Registry"]
+        B --> C["Raw Pydantic Schemas<br/>(contain $ref, $defs, title, etc.)"]
+    end
+
+    subgraph "Runtime (initialize)"
+        D["initialize() called"] --> E["Setup directories"]
+        E --> F["_apply_gemini_schema_transforms()"]
+        F --> G["gemini_compat.make_gemini_compatible()"]
+        G --> H["Transformed Schemas<br/>(Gemini-compatible)"]
+    end
+
+    subgraph "Request Time"
+        H --> I["MCP Protocol"]
+        I --> J["AI Provider<br/>(Claude, Gemini, GPT)"]
+    end
+
+    C -.->|"Before"| F
+    H -.->|"After"| I
+
+    style C fill:#ffcccc
+    style H fill:#ccffcc
+```
+
+---
+
+#### 6. Future Work (User Questions)
+
+The user raised three follow-up items. Here's the current status:
+
+| Item | Status | Notes |
+|------|--------|-------|
+| **CI Integration** | ✅ Done | `tests/test_gemini_schema_compat.py` runs in pytest suite |
+| **Deprecate Outdated Tests** | 🔍 Review Needed | Need to audit `tests/` for obsolete schema-related tests |
+| **Reference Implementation / GitHub Webapp** | 💡 Future | Could extract `gemini_compat.py` + validator as standalone package |
+
+**Recommendation for Reference Implementation:**
+
+The `scripts/schema_compat/` package is already structured for standalone use:
+- `validator.py` — Detects 22 forbidden patterns
+- `transforms.py` — Applies all transformations
+- `cli.py` — Command-line interface (`check`, `diff`, `transform`)
+
+This could become a GitHub Action or webapp that validates any MCP server's schemas:
+
+```bash
+# Hypothetical future usage
+npx mcp-schema-check --server my-mcp-server
+# Output: ✅ All 15 tools pass Gemini compatibility
+```
+
+---
+
+#### 7. Dependency Chain
+
+```mermaid
+graph LR
+    LOG001["LOG-001<br/>Root Cause Discovery<br/>($ref → STRING)"] --> LOG002["LOG-002<br/>Gemini Schema Spec<br/>(22 patterns)"]
+    LOG002 --> LOG003["LOG-003<br/>Implementation Plan<br/>(architecture)"]
+    LOG003 --> LOG004["LOG-004<br/>CLI Tooling<br/>(scripts/schema_compat/)"]
+    LOG003 --> LOG005["LOG-005<br/>CI Tests<br/>(test_gemini_schema_compat.py)"]
+    LOG004 --> LOG006["LOG-006<br/>Production Integration<br/>(gemini_compat.py)"]
+    LOG005 --> LOG006
+
+    style LOG006 fill:#90EE90
+```
+
+**To onboard from scratch:**
+1. Read LOG-001 for the problem (why nested objects became strings)
+2. Read LOG-002 Section 4 for forbidden patterns (what Gemini rejects)
+3. Read LOG-003 Section 3 for architecture (where code lives)
+4. LOG-004, LOG-005, LOG-006 are execution logs (how it was built)

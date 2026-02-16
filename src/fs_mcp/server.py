@@ -707,7 +707,6 @@ def directory_tree(path: str, max_depth: int = 4, exclude_dirs: Optional[List[st
 
 
 # --- Interactive Human-in-the-Loop Tools ---
-APPROVAL_KEYWORD = "##APPROVE##"
 
 
 
@@ -744,7 +743,7 @@ async def propose_and_review(
     ] = False
 ) -> str:
     """
-    Edit a file with human review. Returns APPROVE or REVIEW response.
+    Edit a file with human review. Returns COMMITTED or REVIEW response.
 
     ════════════════════════════════════════════════════════════════════
     QUICK REFERENCE (copy these patterns)
@@ -753,7 +752,6 @@ async def propose_and_review(
     EDIT FILE:    propose_and_review(path="file.py", match_text="old", new_string="new")
     NEW FILE:     propose_and_review(path="new.py", match_text="", new_string="content")
     BATCH EDIT:   propose_and_review(path="file.py", edits=[{"match_text":"a","new_string":"b"}])
-    SAVE CHANGES: commit_review(session_path="/tmp/xyz", original_path="file.py")
 
     ════════════════════════════════════════════════════════════════════
     WORKFLOW: READ FILE → COPY EXACT TEXT → PASTE AS match_text
@@ -771,7 +769,7 @@ async def propose_and_review(
     RESPONSE HANDLING
     ════════════════════════════════════════════════════════════════════
 
-    IF "APPROVE": Call commit_review(session_path, path) to save.
+    IF "COMMITTED": File has been written. No further action needed.
 
     IF "REVIEW": User edited your proposal. Response contains:
       - session_path: Pass in your next call
@@ -789,7 +787,6 @@ async def propose_and_review(
     ════════════════════════════════════════════════════════════════════
     - Paths: relative ("src/main.py") or absolute both work
     - expected_replacements=1 means match must be unique (errors if 0 or 2+ found)
-    - Sessions stay valid until server restarts
     - user_feedback_diff is a unified diff showing exactly what user changed
     """
     return await propose_and_review_logic(
@@ -1271,3 +1268,4 @@ def analyze_gsd_work_log(
         return f"Error: File not found at '{file_path}'. Ensure the path is correct and the file exists."
     except Exception as e:
         return f"Error analyzing file: {str(e)}"
+    

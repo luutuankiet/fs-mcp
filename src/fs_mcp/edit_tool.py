@@ -599,7 +599,7 @@ async def propose_and_review_logic(
     vscode_command = f'code --diff "{current_file_path}" "{future_file_path}"'
     
     print(f"\n--- WAITING FOR HUMAN REVIEW ---\nPlease review the proposed changes in VS Code:\n\n{vscode_command}\n")
-    print(f'To approve, add a double newline to the end of the file before saving.')
+    print(f'To approve, save without changes. To request changes, edit the file and save.')
     if IS_VSCODE_CLI_AVAILABLE:
         try:
             subprocess.Popen(vscode_command, shell=True)
@@ -615,22 +615,35 @@ async def propose_and_review_logic(
     # --- Step 3: Interpret User's Action ---
     user_edited_content = future_file_path.read_text(encoding='utf-8')
     response = {"session_path": str(temp_dir)}
+    
+    # Approval = user saved without making changes (content matches proposal)
+    proposal_text = active_proposal_content if active_proposal_content is not None else ""
+    is_approved = user_edited_content == proposal_text
 
-    if user_edited_content.endswith("\n\n"):
-        # Remove trailing newlines
-        clean_content = user_edited_content.rstrip('\n')
-        
+    if is_approved:
+        # Auto-commit: write to original file and clean up session
+        original_file = validate_path(path)
+        final_content = user_edited_content.rstrip('\n')
         try:
-            future_file_path.write_text(clean_content, encoding='utf-8')
-            print("✅ Approval detected. You can safely close the diff view.")
+            original_file.write_text(final_content, encoding='utf-8')
+            print(f"✅ Changes committed to {path}. You can safely close the diff view.")
         except Exception as e:
-            print(f"⚠️ Could not auto-remove keyword from review file: {e}")
-        response["user_action"] = "APPROVE"
-        response["message"] = "User has approved the changes. Call 'commit_review' to finalize."
+            raise IOError(f"Failed to write final content to {path}: {e}")
+        
+        # Clean up session directory
+        try:
+            shutil.rmtree(temp_dir)
+        except Exception as e:
+            response["user_action"] = "COMMITTED"
+            response["message"] = f"Successfully committed changes to '{path}', but failed to clean up session dir: {e}"
+            return json.dumps(response, indent=2)
+        
+        response["user_action"] = "COMMITTED"
+        response["message"] = f"Changes committed to '{path}'. No further action needed."
+        # Remove session_path from response since session is cleaned up
+        del response["session_path"]
     else:
         current_file_path.write_text(user_edited_content, encoding='utf-8')
-        
-        proposal_text = active_proposal_content if active_proposal_content is not None else ""
 
         user_feedback_diff = "".join(difflib.unified_diff(
             proposal_text.splitlines(keepends=True),

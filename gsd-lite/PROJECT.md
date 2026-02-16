@@ -29,11 +29,11 @@ Project succeeds when:
 - [x] **GSD-Lite Integration:** `analyze_gsd_work_log` provides semantic analysis of project logs.
 - [x] **Zero Setup:** Works immediately with `uvx fs-mcp`.
 
-**Provider Compatibility (New):**
-- [ ] **Universal Schema Compatibility:** All tool schemas work with Claude, Gemini, and GPT without modification.
-- [ ] **Automatic $ref Dereferencing:** Nested Pydantic models are inlined at registration time (Gemini doesn't support `$ref`).
-- [ ] **Schema Validation CI:** Automated tests catch Gemini-incompatible patterns before release.
-- [ ] **Compatibility Tooling:** `scripts/schema_compat/` provides CLI for schema inspection and gap detection.
+**Provider Compatibility (Complete — LOG-006):**
+- [x] **Universal Schema Compatibility:** All tool schemas work with Claude, Gemini, and GPT without modification.
+- [x] **Automatic $ref Dereferencing:** Nested Pydantic models are inlined at registration time (Gemini doesn't support `$ref`).
+- [x] **Schema Validation CI:** Automated tests catch Gemini-incompatible patterns before release.
+- [x] **Compatibility Tooling:** `scripts/schema_compat/` provides CLI for schema inspection and gap detection.
 
 ## Context
 
@@ -67,4 +67,4 @@ Discovery: Gemini silently corrupts tool schemas containing JSON Schema `$ref` r
 - **Schema Compatibility:** All schemas must pass Gemini compatibility validation (no `$ref`, `$defs`, `title`, `default`, etc.).
 
 ---
-*Updated 2026-02-16 — Added provider compatibility as core value (LOG-001, LOG-002, LOG-003)*
+*Updated 2026-02-17 — Provider compatibility complete (LOG-006); all success criteria met*

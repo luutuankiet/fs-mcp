@@ -19,6 +19,7 @@ import subprocess
 from .edit_tool import EditResult, RooStyleEditTool, propose_and_review_logic, MATCH_TEXT_MAX_LENGTH
 from .utils import check_ripgrep, check_jq, check_yq
 from .gsd_lite_analyzer import analyze_gsd_logs
+from .gemini_compat import make_gemini_compatible
 
 # --- Token threshold for large file warnings (conservative to enforce grep->read workflow) ---
 LARGE_FILE_TOKEN_THRESHOLD = 2000
@@ -132,8 +133,30 @@ def initialize(directories: List[str]):
         USER_ACCESSIBLE_DIRS.append(cwd)
         if cwd not in ALLOWED_DIRS:
             ALLOWED_DIRS.append(cwd)
+    
+    # Apply Gemini-compatible schema transforms to all registered tools
+    # This ensures schemas work with Gemini, Claude, and GPT without modification
+    # Reference: LOG-001 (root cause), LOG-003 (implementation plan)
+    _apply_gemini_schema_transforms()
             
     return USER_ACCESSIBLE_DIRS
+
+
+def _apply_gemini_schema_transforms():
+    """
+    Transform all tool schemas to be Gemini-compatible.
+    
+    Called at the end of initialize() to post-process all registered tools.
+    This is the "lowest common denominator" approach — if a schema works
+    with Gemini, it works with Claude and GPT too.
+    
+    Why here? Tools are registered via decorators at module load time.
+    By the time initialize() runs, all tools exist in the registry.
+    """
+    tool_manager = mcp._tool_manager
+    for tool_name, tool in tool_manager._tools.items():
+        if tool.parameters:
+            tool.parameters = make_gemini_compatible(tool.parameters)
 
 def validate_path(requested_path: str) -> Path:
     """
@@ -1248,4 +1271,3 @@ def analyze_gsd_work_log(
         return f"Error: File not found at '{file_path}'. Ensure the path is correct and the file exists."
     except Exception as e:
         return f"Error analyzing file: {str(e)}"
-    

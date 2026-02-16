@@ -1,6 +1,8 @@
 # fs-mcp 📂
 
-**The "Human-in-the-Loop" Filesystem MCP Server**
+**Universal, Provider-Agnostic Filesystem MCP Server**
+
+*Works with Claude, Gemini, GPT — zero configuration required.*
 
 ---
 
@@ -8,73 +10,82 @@ https://github.com/user-attachments/assets/132acdd9-014c-4ba0-845a-7db74644e655
 
 ## 💡 Why This Exists
 
-I built this because I was tired of jumping through hoops.
+MCP (Model Context Protocol) is incredible, but connecting AI agents to filesystems hits real-world walls:
 
-The promise of the Model Context Protocol (MCP) is incredible, but the reality of using the standard filesystem server hit a few walls for my workflow:
+| Problem | fs-mcp Solution |
+|---------|-----------------|
+| **Container Gap** — Stdio doesn't work across Docker boundaries | HTTP server by default — connect from anywhere |
+| **Token Waste** — Agents dump entire files to find one function | Smart `grep → read` pattern with section hints |
+| **Schema Hell** — Gemini silently corrupts nested object schemas | Auto-transforms schemas at runtime — just works |
+| **Blind Overwrites** — One hallucination wipes your `main.py` | Human-in-the-loop review with VS Code diff |
 
-1.  **The Container Gap:** I do most of my work in Docker. Connecting a local agent (like Claude Desktop) to a filesystem inside a container via Stdio is a networking nightmare.
-2.  **The Free Tier Lockout:** I wanted to use the free tier of [Google AI Studio](https://aistudio.google.com/) to edit code, but you can't easily plug MCP into a web interface.
-3.  **Schema Hell:** Even if you *do* copy-paste schemas into Gemini, they often break because Gemini's strict validation is only a [subset of the standard OpenAPI spec](https://ai.google.dev/gemini-api/docs/function-calling).
-
-**fs-mcp solves this.** It is a Python-based server built on `fastmcp` that treats "Human-in-the-Loop" as a first-class citizen, enabling seamless and interactive collaboration between LLM agents and a developer's local environment.
+**fs-mcp** is a Python-based server built on `fastmcp` that treats **efficiency**, **safety**, and **universal compatibility** as first-class citizens.
 
 ---
 
-## 🚀 Key Features
+## 🚀 Core Value
 
-### 1. HTTP by Default (Remote Ready)
+### 1. Agent-First Efficiency
 
-It runs a background HTTP server alongside the CLI. You can finally connect agents to remote environments or containers without SSH tunneling wizardry.
+Tools are designed to minimize token usage and maximize context quality:
 
-### 2. Zero-Config Inspector
+```mermaid
+flowchart LR
+    A["grep_content('def calculate')"] --> B["Returns: Line 142<br/>(hint: function ends L158)"]
+    B --> C["read_files(start=142, end=158)"]
+    C --> D["17 lines instead of 5000"]
+    
+    style D fill:#90EE90
+```
 
-No `npm install inspector`. I baked a **Streamlit Web UI** directly into the package. Launch it, and you instantly have a visual form to test tools, view results, and generate configs.
+- **Section Hints**: `grep_content` tells you where functions/classes end
+- **Pattern Reading**: `read_files` with `read_to_next_pattern` extracts complete blocks
+- **Token-Efficient Errors**: Fuzzy match suggestions instead of file dumps (90% savings)
 
-### 3. Copy-Paste Gemini Schemas 📋
+### 2. Human-in-the-Loop Safety
 
-The UI automatically sanitizes and translates your tool schemas specifically for **Google GenAI**. It strips forbidden keys (`default`, `title`, etc.) so you can paste function definitions directly into AI Studio and start coding for free.
-
-### 4. Human-in-the-Loop Diffing 🤝
-
-The **`propose_and_review`** tool bridges the gap between agent proposals and human oversight. It opens a VS Code diff window for you to inspect changes. 
-
-**How it Works:**
-1. The agent calls `propose_and_review` with a code change.
-2. A VS Code window pops up showing the **Diff**.
-3. **To Approve:** Add a double newline at the very end of the file and Save.
-4. **To Review:** Just edit the code directly in the diff window and Save. The agent will receive your edits as feedback and try again!
+The `propose_and_review` tool opens a VS Code diff for every edit:
 
 ```mermaid
 sequenceDiagram
-    participant User
     participant Agent
-    participant MCP_Server
+    participant Server
+    participant Human
 
-    User->>Agent: "Propose an edit to README.md"
-    activate Agent
-    Agent->>MCP_Server: call propose_and_review(path="README.md", old, new)
-    activate MCP_Server
-    Note right of MCP_Server: Creates temp files & prints vscode_command.<br/>Now enters "watch loop", waiting for user to save.
-    MCP_Server-->>User: (via console) `code --diff ...`
+    Agent->>Server: propose_and_review(edits)
+    Server->>Human: Opens VS Code diff
     
-    Note right of User: User opens VS Code, is happy with the change,<br/>adds a double newline to the end of the file, and saves.
-    
-    Note right of MCP_Server: Save detected! Checks file content.
-    MCP_Server-->>Agent: return { user_action: "APPROVE", message: "User approved. Call commit_review." }
-    deactivate MCP_Server
-
-    Note right of Agent: Agent sees "APPROVE" and knows what to do next.
-    Agent->>MCP_Server: call commit_review(session_path, original_path="README.md")
-    activate MCP_Server
-    Note right of MCP_Server: Copies 'future' file to original path,<br/>removes the trailing newlines,<br/>and cleans up the temp directory.
-    MCP_Server-->>Agent: return "Successfully committed changes."
-    deactivate MCP_Server
-    
-    Agent-->>User: "Changes have been committed!"
-    deactivate Agent
+    alt Approve
+        Human->>Server: Add double newline + Save
+        Server->>Agent: "APPROVE"
+        Agent->>Server: commit_review()
+    else Modify
+        Human->>Server: Edit directly + Save
+        Server->>Agent: "REVIEW" + your changes
+        Agent->>Agent: Incorporate feedback
+    end
 ```
 
+**Safety features:**
+- Full overwrites require explicit `OVERWRITE_FILE` sentinel
+- Batch edits with `edits=[]` for multiple changes in one call
+- Session-based workflow prevents race conditions
 
+### 3. Universal Provider Compatibility
+
+**The problem:** Gemini silently corrupts JSON Schema `$ref` references — nested objects like `FileReadRequest` degrade to `STRING`, breaking tool calls.
+
+**The fix:** fs-mcp automatically transforms all schemas to Gemini-compatible format at startup. No configuration needed.
+
+```
+Before (broken):     "items": {"$ref": "#/$defs/FileReadRequest"}
+                              ↓ Gemini sees this as ↓
+                     "items": {"type": "STRING"}  ❌
+
+After (fs-mcp):      "items": {"type": "object", "properties": {...}}  ✅
+```
+
+This "lowest common denominator" approach means **the same server works with Claude, Gemini, and GPT** without any provider-specific code.
 
 ---
 
@@ -82,83 +93,140 @@ sequenceDiagram
 
 ### Run Instantly
 
-By default, this command launches the **Web UI (8123)** and a **Background HTTP Server (8124)**.
-
 ```bash
-# Allow access to the current dir
+# One command — launches Web UI (8123) + HTTP Server (8124)
 uvx fs-mcp .
 ```
 
 ### Selective Launch
 
-Want to disable a component? Use the flags:
+```bash
+# HTTP only (headless / Docker / CI)
+fs-mcp --no-ui .
+
+# UI only (local testing)
+fs-mcp --no-http .
+```
+
+### Docker
 
 ```bash
-# UI Only (No background HTTP)
-fs-mcp --no-http .
-
-# HTTP Only (Headless / Docker mode)
-fs-mcp --no-ui .
+# In your Dockerfile or entrypoint
+uvx fs-mcp --no-ui --http-host 0.0.0.0 --http-port 8124 /app
 ```
 
 ---
 
 ## 🔌 Configuration
 
-### Claude Desktop (Stdio Mode)
-
-Add this to your `claude_desktop_config.json`:
+### Claude Desktop (Stdio)
 
 ```json
 {
   "mcpServers": {
     "fs-mcp": {
       "command": "uvx",
-      "args": [
-        "fs-mcp",
-        "/absolute/path/to/your/project"
-      ]
+      "args": ["fs-mcp", "/path/to/your/project"]
     }
   }
 }
 ```
 
-### Docker (HTTP Mode)
+### OpenCode / Other HTTP Clients
 
-To run inside a container and expose the filesystem to a local agent:
+Point your MCP client to `http://localhost:8124/mcp/` (SSE transport).
+
+---
+
+## 🧰 The Toolbox
+
+### Discovery & Reading
+
+| Tool | Purpose |
+|------|---------|
+| `grep_content` | Regex search with **section hints** — knows where functions end |
+| `read_files` | Multi-file read with `head`/`tail`, line ranges, or `read_to_next_pattern` |
+| `directory_tree` | Recursive JSON tree (auto-excludes `.git`, `.venv`, `node_modules`) |
+| `search_files` | Glob pattern file discovery |
+| `get_file_info` | Metadata + token estimate + chunking recommendations |
+
+### Editing (Human-in-the-Loop)
+
+| Tool | Purpose |
+|------|---------|
+| `propose_and_review` | **Safe editing** — VS Code diff, batch edits, fuzzy match suggestions |
+| `commit_review` | Finalize approved changes |
+
+### Structured Data
+
+| Tool | Purpose |
+|------|---------|
+| `query_json` | JQ queries on large JSON files (bounded output) |
+| `query_yaml` | YQ queries on YAML files |
+
+### Utilities
+
+| Tool | Purpose |
+|------|---------|
+| `list_directory_with_sizes` | Detailed listing with formatted sizes |
+| `list_allowed_directories` | Show security-approved paths |
+| `create_directory` | Create directories |
+| `read_media_file` | Base64 encode images/audio for vision models |
+
+### Analysis
+
+| Tool | Purpose |
+|------|---------|
+| `analyze_gsd_work_log` | Semantic analysis of GSD-Lite project logs |
+
+---
+
+## 🏗️ Architecture
+
+```
+src/fs_mcp/
+├── server.py          # Tool definitions + schema transforms
+├── gemini_compat.py   # JSON Schema → Gemini-compatible
+├── edit_tool.py       # propose_and_review logic
+├── web_ui.py          # Streamlit dashboard
+└── gsd_lite_analyzer.py
+
+scripts/schema_compat/ # CLI for schema validation
+tests/                 # pytest suite (including Gemini compat CI guard)
+```
+
+**Key dependency:** `ripgrep` (`rg`) must be installed for `grep_content`.
+
+---
+
+## 📊 Why Token Efficiency Matters
+
+| Scenario | Without fs-mcp | With fs-mcp |
+|----------|----------------|-------------|
+| Find a function | Read entire file (5000 tokens) | grep + targeted read (200 tokens) |
+| Edit mismatch error | Dump file + error (6000 tokens) | Fuzzy suggestions (500 tokens) |
+| Explore large JSON | Load entire file (10000 tokens) | JQ query (100 tokens) |
+
+**Result:** 10-50x reduction in context usage for common operations.
+
+---
+
+## 🧪 Testing
 
 ```bash
-# In your entrypoint or CMD
-uvx fs-mcp --no-ui --http-host 0.0.0.0 --http-port 8124 /app
+# Run all tests
+uv run pytest
+
+# Run Gemini compatibility guard (fails if schemas break)
+uv run pytest tests/test_gemini_schema_compat.py
 ```
 
 ---
 
-## The Toolbox 🧰
+## 📜 License & Credits
 
-| Tool                       | Description                                                                |
-| -------------------------- | -------------------------------------------------------------------------- |
-| `propose_and_review`       | **Interactive Review:** Opens VS Code diff. Add a double newline to finalize.  |
-| `commit_review`            | Finalizes the changes from an interactive review session.                  |
-| `read_multiple_files`      | Reads content of multiple files to save context window.                    |
-| `directory_tree`           | **Fast:** Returns recursive JSON tree. Skips `.venv`/`.git` automatically. |
-| `search_files`             | Recursive pattern discovery using `rglob`.                                 |
-| `grounding_search`         | **New:** Natural language query for grounded search results.               |
-| `read_text_file`           | Standard text reader (supports `head`/`tail` for large files).             |
-| `list_directory_with_sizes`| Detailed listing including formatted file sizes.                           |
-| `list_allowed_directories` | List security-approved paths.                                              |
-| `get_file_info`            | Metadata retrieval (size, modified time).                                  |
-| `read_media_file`          | Returns base64 encoded images/audio.                                       |
-| `write_file`               | Creates or overwrites files (atomic operations).                           |
-| `create_directory`         | Create a new directory.                                                    |
-| `move_file`                | Move or rename files.                                                      |
-| `append_text`              | Safe fallback for appending content to EOF.                                |
+Built with ❤️ for the MCP community by **luutuankiet**.
 
----
-
-## License & Credits
-
-Built with ❤️ for the MCP Community by **luutuankiet**.
-Powered by **FastMCP** and **Streamlit**.
+Powered by [FastMCP](https://github.com/jlowin/fastmcp), [Pydantic](https://docs.pydantic.dev/), and [Streamlit](https://streamlit.io/).
 
 **Now go build some agents.** 🚀

@@ -127,10 +127,12 @@ def test_literal_newline_roundtrip(temp_env):
     assert 'print("Hello\\nWorld")' in read_result
 
     # --- Step 3: Edit using exact content from read ---
+    # Using 'match_text' instead of 'old_string'
     tool = server.RooStyleEditTool(validate_path_func=lambda p: Path(p))
+    # Note: _prepare_edit signature is (path, match_text, new_string, ...)
     prep_result = tool._prepare_edit(
         file_path=str(target),
-        old_string='print("Hello\\nWorld")',
+        match_text='print("Hello\\nWorld")',
         new_string='print("Hi\\nUniverse")',
         expected_replacements=1
     )
@@ -146,4 +148,3 @@ def test_literal_newline_roundtrip(temp_env):
     # --- Step 5: Re-read and confirm no corruption ---
     re_read = server.read_files.fn([{"path": str(target)}])
     assert 'print("Hi\\nUniverse")' in re_read
-

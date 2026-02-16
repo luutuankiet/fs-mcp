@@ -16,6 +16,8 @@ dependencies = [
     "pyfiglet",
     "fastapi>=0.128.0",
     "distro",
+    "jsonref>=1.1.0",
+    "tiktoken>=0.12.0",
 ]
 
 [project.scripts]

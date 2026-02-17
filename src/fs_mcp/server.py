@@ -32,7 +32,7 @@ WORKFLOW: Read file → Copy exact text → Paste here.
 Whitespace matters. Multi-line: use \\n between lines.
 Example: "def foo():\\n    return 1"
 
-SPECIAL: "" = new file, "OVERWRITE_FILE" = replace all.
+SPECIAL: "" = new file, "OVERWRITE_FILE" = replace all, "APPEND_TO_FILE" = append to end.
 
 If no match, error tells you why - just re-read and retry.
 Max {MATCH_TEXT_MAX_LENGTH} chars."""
@@ -51,7 +51,7 @@ RULES:
 - Do NOT use for overlapping regions - split into separate calls instead
 - Max {MATCH_TEXT_MAX_LENGTH} chars per match_text
 
-WHEN TO USE: Renaming something + updating its references in same file."""
+WHEN TO USE: ANY time you make 2+ changes to the same file. Saves tokens and review cycles."""
 
 EDIT_PAIR_MATCH_TEXT_DESCRIPTION = f"""Exact text to find. Must appear exactly once. Copy character-for-character including whitespace. Max {MATCH_TEXT_MAX_LENGTH} chars."""
 
@@ -812,17 +812,27 @@ async def propose_and_review(
     """
     Edit a file with human review. Returns COMMITTED or REVIEW response.
 
-    ════════════════════════════════════════════════════════════════════
+    ##
     QUICK REFERENCE (copy these patterns)
-    ════════════════════════════════════════════════════════════════════
+    
 
     EDIT FILE:    propose_and_review(path="file.py", match_text="old", new_string="new")
     NEW FILE:     propose_and_review(path="new.py", match_text="", new_string="content")
+    APPEND FILE:  propose_and_review(path="file.py", match_text="APPEND_TO_FILE", new_string="content")
     BATCH EDIT:   propose_and_review(path="file.py", edits=[{"match_text":"a","new_string":"b"}])
 
-    ════════════════════════════════════════════════════════════════════
+    ##
+    MODES (Mutually Exclusive)
+
+    1. SINGLE EDIT:  path + match_text + new_string
+    2. BATCH EDIT:   path + edits (array of {match_text, new_string})
+    3. NEW FILE:     path + match_text="" + new_string
+    4. OVERWRITE:    path + match_text="OVERWRITE_FILE" + new_string
+    5. APPEND:       path + match_text="APPEND_TO_FILE" + new_string
+
+    ##
     WORKFLOW: READ FILE → COPY EXACT TEXT → PASTE AS match_text
-    ════════════════════════════════════════════════════════════════════
+    
 
     match_text must be LITERAL and EXACT (not regex). Whitespace matters.
 
@@ -832,9 +842,9 @@ async def propose_and_review(
     Multi-line example (file has "def foo():" on one line, "    return 1" on next):
       match_text="def foo():\\n    return 1"
 
-    ════════════════════════════════════════════════════════════════════
+    ##
     RESPONSE HANDLING
-    ════════════════════════════════════════════════════════════════════
+    
 
     IF "COMMITTED": File has been written. No further action needed.
 
@@ -843,15 +853,16 @@ async def propose_and_review(
       - user_feedback_diff: Shows what user changed
       Next call: match_text = user's edited version (not yours)
 
-    ════════════════════════════════════════════════════════════════════
+    ##
     SPECIAL VALUES FOR match_text
-    ════════════════════════════════════════════════════════════════════
+    
     ""              = Create new file (file must not exist)
     "OVERWRITE_FILE" = Replace entire file content
+    "APPEND_TO_FILE" = Append new_string to end (file must exist)
 
-    ════════════════════════════════════════════════════════════════════
+    ##
     NOTES
-    ════════════════════════════════════════════════════════════════════
+    
     - Paths: relative ("src/main.py") or absolute both work
     - expected_replacements=1 means match must be unique (errors if 0 or 2+ found)
     - user_feedback_diff is a unified diff showing exactly what user changed

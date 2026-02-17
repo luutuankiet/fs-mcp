@@ -15,12 +15,12 @@
 
 ### Setup
 ```bash
-cp tests/fixtures/propose_and_review_gaps/gap1_append/sample_log.md /tmp/test_log.md
+cp tests/fixtures/propose_and_review_gaps/gap1_append/sample_log.md  ./tmp/test_log.md
 ```
 
 ### Prompt (Copy Exactly)
 ```
-Add a new log entry to /tmp/test_log.md with the following content:
+Add a new log entry to ./tmp/test_log.md with the following content:
 
 ### [LOG-003] - [FEATURE] - New Widget
 
@@ -61,12 +61,12 @@ Just append it to the end of the file. Don't modify existing content.
 
 ### Setup
 ```bash
-cp tests/fixtures/propose_and_review_gaps/gap2_mode_exclusivity/sample_code.py /tmp/test_code.py
+cp tests/fixtures/propose_and_review_gaps/gap2_mode_exclusivity/sample_code.py ./tmp/test_code.py
 ```
 
 ### Prompt (Copy Exactly)
 ```
-In /tmp/test_code.py, I need you to:
+In ./tmp/test_code.py, I need you to:
 1. Rename the function `old_function` to `new_function`
 2. Update the docstring to say "New function implementation"
 
@@ -95,12 +95,12 @@ Agent recognizes modes are mutually exclusive and either:
 
 ### Setup
 ```bash
-cp tests/fixtures/propose_and_review_gaps/gap1_append/sample_log.md /tmp/test_params.md
+cp tests/fixtures/propose_and_review_gaps/gap1_append/sample_log.md ./tmp/test_params.md
 ```
 
 ### Prompt (Copy Exactly)
 ```
-Create a new file at /tmp/new_file.md using propose_and_review. The content should be:
+Create a new file at ./tmp/new_file.md using propose_and_review. The content should be:
 
 # New Document
 
@@ -110,14 +110,14 @@ This is a test file.
 ### Expected Failure Mode (Before Fix)
 Agent calls with minimal params:
 ```json
-{"path": "/tmp/new_file.md", "new_string": "# New Document\n\nThis is a test file."}
+{"path": "./tmp/new_file.md", "new_string": "# New Document\n\nThis is a test file."}
 ```
 Missing `match_text=""` for create mode → error or unexpected behavior.
 
 ### Expected Success (After Fix)
 Agent provides all required params for create mode:
 ```json
-{"path": "/tmp/new_file.md", "match_text": "", "new_string": "# New Document\n\nThis is a test file."}
+{"path": "./tmp/new_file.md", "match_text": "", "new_string": "# New Document\n\nThis is a test file."}
 ```
 
 ### Observation Checklist
@@ -131,12 +131,12 @@ Agent provides all required params for create mode:
 
 ### Setup
 ```bash
-cp tests/fixtures/propose_and_review_gaps/gap4_batch_priority/sample_code.py /tmp/test_batch.py
+cp tests/fixtures/propose_and_review_gaps/gap4_batch_priority/sample_code.py ./tmp/test_batch.py
 ```
 
 ### Prompt (Copy Exactly)
 ```
-In /tmp/test_batch.py, make these changes:
+In ./tmp/test_batch.py, make these changes:
 1. Change `API_VERSION = "1.0"` to `API_VERSION = "2.0"`
 2. Change `DEBUG = True` to `DEBUG = False`  
 3. Change `MAX_RETRIES = 3` to `MAX_RETRIES = 5`
@@ -156,7 +156,7 @@ Results in: 3 tool calls, 3 review cycles, 3x token usage.
 Agent batches all changes:
 ```json
 {
-  "path": "/tmp/test_batch.py",
+  "path": "./tmp/test_batch.py",
   "edits": [
     {"match_text": "API_VERSION = \"1.0\"", "new_string": "API_VERSION = \"2.0\""},
     {"match_text": "DEBUG = True", "new_string": "DEBUG = False"},

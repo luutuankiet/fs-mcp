@@ -5,15 +5,16 @@
 ## 1. Current Understanding (Read First)
 
 <current_mode>
-idle (feature complete)
+discuss
 </current_mode>
 
 <active_task>
-None — LOG-008 (Core Tier) completed
+LOG-010: Documenting timeout loop discovered during fixture creation
 </active_task>
 
 <parked_tasks>
-None
+- LOG-009: Semantic gaps fix decision (blocked on LOG-010 documentation)
+- Fixture creation: gap2, gap4 fixtures incomplete (see LOG-010 Section 8)
 </parked_tasks>
 
 <vision>
@@ -30,14 +31,16 @@ fs-mcp should work seamlessly with all major AI providers (Claude, Gemini, GPT) 
 - LOG-006: Fix verified — Live Gemini test shows FileReadRequest structure fully visible; CI tests pass (21/21)
 - LOG-007: Auto-Commit Approval — Reduced friction by detecting "save without changes" as implicit approval, saving 1 LLM call per file edit
 - LOG-008: Core Tier Tooling — Default to "safe" GSD-Lite toolset (14 tools), hide raw/unsafe tools unless --all flag used
+- LOG-009: Cross-model schema analysis — 6 semantic gaps identified in propose_and_review; append pattern undocumented (CRITICAL), batch not prioritized (MEDIUM)
 </decisions>
 
 <blockers>
-None
+- Decision needed: Option A (doc-only fix) vs Option B (APPEND_TO_FILE sentinel) for LOG-009
+- Open questions from LOG-010: retry behavior after MCP timeout
 </blockers>
 
 <next_action>
-Discuss future work: (1) GitHub CI integration, (2) Test cleanup audit, (3) Reference implementation / standalone package
+Resume fixture creation for LOG-009 testing (gap2, gap4 remaining)
 </next_action>
 
 ---
@@ -71,6 +74,9 @@ Discuss future work: (1) GitHub CI integration, (2) Test cleanup audit, (3) Refe
 - LOG-006: Production Integration — `src/fs_mcp/gemini_compat.py` integrated into `server.py`; live Gemini verification passed
 - LOG-007: UX Optimization — `propose_and_review` now auto-commits on approval (saved without changes), removing explicit `commit_review` step
 - LOG-008: Core Tier Implementation — `server.py` filtering, `CORE_TOOLS` constant, and `--all` CLI flag implemented
+
+### Discovery & Analysis
+- LOG-009: Cross-Model Schema Analysis — Reconciled Gemini vs Claude runtime schemas; identified 6 semantic gaps in `propose_and_review` (see LOG-009 Section 4-5 for full gap table)
 
 ---
 
@@ -1847,5 +1853,722 @@ The user requested an opinionated "Core Tier" of tools to match the GSD-Lite wor
 - `move_file` (Potentially destructive)
 - `append_text` (Use `propose_and_review`)
 - `grounding_search` (External dependency)
+
+---
+
+### [LOG-009] - [DISCOVERY] - `propose_and_review` Semantic Gaps for Weak Models — Cross-Model Schema Analysis - Task: TOOL-UX
+
+**Date:** 2026-02-17
+**Session:** Debugging Gemini failure modes with `propose_and_review` tool
+**Participants:** Claude (claude-opus-4-5), Gemini (gemini-3-pro-preview)
+**Source Artifact:** `tmp.md` (2-turn Gemini debug transcript)
+
+---
+
+#### 1. Executive Summary
+
+Cross-model analysis revealed **6 semantic gaps** in the `propose_and_review` tool schema that cause weak models (specifically Gemini) to fail on common operations. The most critical gap: **no documentation for appending content to end of file** — the most frequent GSD-Lite operation (adding log entries).
+
+**Key Finding:** The tool is a **5-in-1 semantic interface** with implicit mode selection. Weaker models cannot infer the "tail-anchor" append pattern that stronger models derive naturally.
+
+**Dependencies:**
+- Builds on: LOG-006 (Schema compatibility fix — Gemini can now parse the schema correctly)
+- Related: LOG-008 (Core Tier — `propose_and_review` is the primary edit tool)
+
+---
+
+#### 2. Methodology: Cross-Model Schema Reconciliation
+
+**Step 1: Extract Gemini's Runtime View**
+
+Asked Gemini to report verbatim JSON schema it sees for `propose_and_review` and `read_files`. This bypasses any documentation and shows exactly what the model's tool-calling layer receives.
+
+**Step 2: Compare Against Claude's Runtime View**
+
+Claude (this session) extracted its own runtime schema from the MCP connection. Key structural difference:
+
+| Aspect | Gemini Reports | Claude Sees |
+|--------|---------------|-------------|
+| Type notation | `"type": "OBJECT"` (uppercase) | `"type": "object"` (lowercase) |
+| Nullable fields | Omitted | `"nullable": true` present |
+| Schema version | Not present | `"$schema": "https://json-schema.org/draft/2020-12/schema"` |
+
+**Verdict:** Type case difference is **expected** — Gemini SDK transforms lowercase JSON Schema types to uppercase Gemini-native types at runtime. This is not a bug. See LOG-002 Section 4 for the transformation spec.
+
+**Step 3: Semantic Gap Analysis**
+
+With schema parity confirmed, we analyzed the *semantic* gaps — places where the schema is technically correct but the *instructions* are insufficient for weak models.
+
+---
+
+#### 3. The 5-in-1 Tool Architecture
+
+`propose_and_review` is not a single operation — it's **five distinct modes** selected by parameter values:
+
+```mermaid
+flowchart TD
+    subgraph "propose_and_review Mode Selection"
+        START[Agent calls propose_and_review] --> CHECK_MATCH{match_text value?}
+        
+        CHECK_MATCH -->|"' '"| CREATE[CREATE MODE<br/>New file, must not exist]
+        CHECK_MATCH -->|"OVERWRITE_FILE"| OVERWRITE[OVERWRITE MODE<br/>Replace entire content]
+        CHECK_MATCH -->|"<literal text>"| CHECK_EDITS{edits array<br/>provided?}
+        
+        CHECK_EDITS -->|"Yes"| BATCH[BATCH MODE<br/>Multiple find-replace]
+        CHECK_EDITS -->|"No"| SINGLE[SINGLE EDIT MODE<br/>One find-replace]
+        
+        CHECK_MATCH -->|"???"| APPEND[APPEND MODE<br/>❌ NOT DOCUMENTED]
+    end
+    
+    style APPEND fill:#ff6b6b,stroke:#c92a2a,color:#fff
+    style CREATE fill:#51cf66,stroke:#2f9e44
+    style OVERWRITE fill:#ffd43b,stroke:#fab005
+    style BATCH fill:#74c0fc,stroke:#1c7ed6
+    style SINGLE fill:#74c0fc,stroke:#1c7ed6
+```
+
+**Critical Gap:** There is no `APPEND_TO_FILE` sentinel. Agents must *infer* the tail-anchor pattern.
+
+---
+
+#### 4. Gap Analysis: Complete Findings
+
+##### Gap 1: Append Pattern Undocumented 🔴 CRITICAL
+
+**Current Schema (SPECIAL VALUES section):**
+```
+""              = Create new file (file must not exist)
+"OVERWRITE_FILE" = Replace entire file content
+```
+
+**Missing:**
+```
+TO APPEND: [No sentinel — requires tail-anchor pattern]
+```
+
+**Failure Mode Observed (from tmp.md transcript):**
+
+```mermaid
+sequenceDiagram
+    participant Agent as Gemini Agent
+    participant Tool as propose_and_review
+    participant File as WORK.md
+    
+    Note over Agent: "I need to append a log entry"
+    
+    Agent->>Tool: match_text="\n"<br/>new_string="\n### [LOG-002]..."
+    Tool->>File: Search for "\n"
+    File-->>Tool: Found 54 matches
+    Tool-->>Agent: ❌ Error: Found 54 matches, expected 1
+    
+    Note over Agent: Agent is stuck.<br/>May hallucinate append=true<br/>or OVERWRITE entire file
+```
+
+**Correct Pattern (undocumented):**
+
+```mermaid
+sequenceDiagram
+    participant Agent as Agent
+    participant Read as read_files
+    participant Edit as propose_and_review
+    participant File as WORK.md
+    
+    Note over Agent: "I need to append a log entry"
+    
+    Agent->>Read: tail=10
+    Read->>File: Read last 10 lines
+    File-->>Read: "[unique tail content]"
+    Read-->>Agent: "[unique tail content]"
+    
+    Agent->>Edit: match_text="[unique tail content]"<br/>new_string="[unique tail content]\n### [LOG-002]..."
+    Edit->>File: Find unique match, replace
+    File-->>Edit: Success
+    Edit-->>Agent: ✅ COMMITTED
+```
+
+**Source:** `tmp.md` lines 85-120, Gemini's analysis: "The tool description explains how to *create* (`""`) and *overwrite* (`"OVERWRITE_FILE"`), but it does **not** explain the specific pattern required to append."
+
+---
+
+##### Gap 2: Mode Mutual Exclusivity Unclear 🟡 MEDIUM
+
+**Problem:** Schema shows both `match_text`/`new_string` AND `edits` array as sibling properties. Nothing indicates they are **mutually exclusive modes**.
+
+**Schema Structure:**
+```json
+{
+  "properties": {
+    "match_text": {"type": "STRING", ...},
+    "new_string": {"type": "STRING", ...},
+    "edits": {"type": "ARRAY", ...}
+  }
+}
+```
+
+**Risk:** Weak model passes both `match_text` AND `edits`, causing undefined behavior.
+
+**Fix Needed:** Explicit mode documentation at top level.
+
+---
+
+##### Gap 3: Required Parameters Per Mode Unclear 🟡 MEDIUM
+
+**Schema says:**
+```json
+"required": ["path"]
+```
+
+**Reality by mode:**
+
+| Mode | Actually Required |
+|------|-------------------|
+| CREATE | `path` + `match_text=""` + `new_string` |
+| EDIT | `path` + `match_text` + `new_string` |
+| BATCH | `path` + `edits` |
+| OVERWRITE | `path` + `match_text="OVERWRITE_FILE"` + `new_string` |
+
+**Risk:** Agent calls with just `path`, gets cryptic error, burns a turn.
+
+---
+
+##### Gap 4: Batch Edit Not Prioritized 🟡 MEDIUM
+
+**Current QUICK REFERENCE order:**
+```
+EDIT FILE:    propose_and_review(path="file.py", match_text="old", new_string="new")
+NEW FILE:     propose_and_review(path="new.py", match_text="", new_string="content")
+BATCH EDIT:   propose_and_review(path="file.py", edits=[...])
+```
+
+**Problem:** Single edit is shown first. Weak models pattern-match the first example they see.
+
+**`edits` parameter description:**
+```
+WHEN TO USE: Renaming something + updating its references in same file.
+```
+
+**Problem:** This is too narrow. Doesn't generalize to "any 2+ changes to same file."
+
+**Impact:** Agents make 3 separate tool calls instead of 1 batch call → 3x token usage, 3x review cycles.
+
+---
+
+##### Gap 5: session_path Workflow Complexity 🟢 LOW
+
+**Description mentions:**
+```
+ONLY for continuing after 'REVIEW' response. When user modifies your proposal, 
+pass session_path here and set match_text to the USER's edited text...
+```
+
+**Assessment:** This is a multi-turn stateful workflow. However:
+- Happy path (COMMITTED) is simple — no session_path needed
+- REVIEW path is rare in practice (auto-commit handles most cases, see LOG-007)
+- Complexity is acceptable for edge case
+
+**No fix needed.**
+
+---
+
+##### Gap 6: expected_replacements Default Buried 🟢 LOW
+
+**Current:**
+```json
+"expected_replacements": {
+  "description": "How many times match_text should appear. Default 1 = must be unique..."
+}
+```
+
+**Assessment:** Default is documented in description. Error messages are clear ("Found N matches, expected 1"). Agents recover quickly.
+
+**No fix needed.**
+
+---
+
+#### 5. Gap Summary Table
+
+| # | Gap | Risk | Fix Type | Effort | Status |
+|---|-----|------|----------|--------|--------|
+| 1 | Append pattern undocumented | 🔴 CRITICAL | Doc update | Low | **TODO** |
+| 2 | Mode mutual exclusivity unclear | 🟡 MEDIUM | Doc update | Low | **TODO** |
+| 3 | Required params per mode unclear | 🟡 MEDIUM | Doc update | Low | **TODO** |
+| 4 | Batch edit not prioritized | 🟡 MEDIUM | Doc update | Low | **TODO** |
+| 5 | session_path complexity | 🟢 LOW | None | - | OK |
+| 6 | expected_replacements default | 🟢 LOW | None | - | OK |
+
+---
+
+#### 6. Proposed Solutions
+
+##### Option A: Documentation-Only Fix (No Code Change)
+
+Update `propose_and_review` tool description with:
+
+**A1. Add MODES section (addresses Gaps 2, 3):**
+```
+════════════════════════════════════════════════════════════════════
+MODES (pick ONE — mutually exclusive)
+════════════════════════════════════════════════════════════════════
+• SINGLE EDIT:  path + match_text + new_string
+• BATCH EDIT:   path + edits array (match_text/new_string ignored)
+• CREATE FILE:  path + match_text="" + new_string
+• OVERWRITE:    path + match_text="OVERWRITE_FILE" + new_string
+• APPEND:       See "TO APPEND" below (no sentinel, uses tail-anchor)
+```
+
+**A2. Add APPEND documentation (addresses Gap 1):**
+```
+════════════════════════════════════════════════════════════════════
+TO APPEND (no sentinel — use tail-anchor pattern)
+════════════════════════════════════════════════════════════════════
+1. read_files([{"path": "file.md", "tail": 10}])
+2. Copy result as match_text (ensures uniqueness via timestamps/IDs)
+3. new_string = match_text + "\n" + new_content
+
+WHY: Matching just "\n" or "---" fails (multiple matches). 
+     The tail content contains unique identifiers.
+```
+
+**A3. Add EFFICIENCY section (addresses Gap 4):**
+```
+════════════════════════════════════════════════════════════════════
+EFFICIENCY: BATCH OVER MULTI-TURN
+════════════════════════════════════════════════════════════════════
+When making 2+ changes to same file, USE BATCH:
+  ✅ edits=[{edit1}, {edit2}]     — 1 call, 1 review
+  ❌ 2 separate calls             — 2 calls, 2 reviews
+
+Batch saves tokens and reduces user review fatigue.
+```
+
+**A4. Expand `edits` WHEN TO USE:**
+```
+WHEN TO USE:
+- Making 2+ changes to same file (ALWAYS prefer over multiple calls)
+- Renaming + updating references
+- Adding import + using it in code
+- Any multi-site edit in one file
+```
+
+---
+
+##### Option B: Add `APPEND_TO_FILE` Sentinel (Code Change)
+
+Implement a third sentinel value:
+
+```python
+# In propose_and_review handler
+if match_text == "APPEND_TO_FILE":
+    if not file_exists(path):
+        raise Error("File must exist for APPEND_TO_FILE")
+    content = read_file(path)
+    new_content = content + new_string
+    write_file(path, new_content)
+    return "COMMITTED"
+```
+
+**Schema update:**
+```
+SPECIAL VALUES FOR match_text
+════════════════════════════════════════════════════════════════════
+""               = Create new file (file must not exist)
+"OVERWRITE_FILE" = Replace entire file content
+"APPEND_TO_FILE" = Append new_string to end (file must exist)
+```
+
+**Trade-offs:**
+
+| Aspect | Option A (Doc) | Option B (Sentinel) |
+|--------|---------------|---------------------|
+| Effort | Low (text only) | Medium (code + tests) |
+| Weak model support | Moderate (must follow instructions) | Strong (simple sentinel) |
+| Tool call count | 2 (read + edit) | 1 (append) |
+| Flexibility | High (tail-anchor works anywhere) | Low (only EOF append) |
+
+---
+
+#### 7. User's Vision for `propose_and_review`
+
+Per discussion, the tool is intentionally **semantically dense** to optimize for:
+
+1. **Minimal tool count** — One tool handles create/edit/batch/overwrite instead of 4 separate tools
+2. **Token efficiency** — Fewer tool definitions = smaller system prompt
+3. **Human-in-the-loop safety** — All writes go through review (unlike raw `write_file`)
+
+**Design Philosophy:** Accept complexity in one tool to reduce complexity across the toolset.
+
+**Implication:** Documentation quality is critical. The tool's power comes with learning curve — we must minimize that curve through clear, example-rich instructions.
+
+---
+
+#### 8. Gemini Schema Verbatim (For Reference)
+
+Preserved from `tmp.md` for future debugging. These are the exact schemas Gemini reported seeing at runtime.
+
+<details>
+<summary><b>Click to expand: read_files schema (Gemini view)</b></summary>
+
+```json
+{
+  "name": "tools_gsd-lite-fs_read_files",
+  "description": "Read the contents of multiple files simultaneously...",
+  "parameters": {
+    "type": "OBJECT",
+    "properties": {
+      "files": {
+        "type": "ARRAY",
+        "description": "A list of file read requests...",
+        "items": {
+          "type": "OBJECT",
+          "properties": {
+            "path": {"type": "STRING", "description": "..."},
+            "start_line": {"type": "INTEGER", "description": "..."},
+            "end_line": {"type": "INTEGER", "description": "..."},
+            "head": {"type": "INTEGER", "description": "..."},
+            "tail": {"type": "INTEGER", "description": "..."},
+            "read_to_next_pattern": {"type": "STRING", "description": "..."}
+          },
+          "required": ["path"]
+        }
+      },
+      "large_file_passthrough": {"type": "BOOLEAN", "description": "..."}
+    },
+    "required": ["files"]
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><b>Click to expand: propose_and_review schema (Gemini view)</b></summary>
+
+```json
+{
+  "name": "tools_gsd-lite-fs_propose_and_review",
+  "description": "Edit a file with human review. Returns COMMITTED or REVIEW response...",
+  "parameters": {
+    "type": "OBJECT",
+    "properties": {
+      "path": {"type": "STRING", "description": "..."},
+      "match_text": {"type": "STRING", "description": "..."},
+      "new_string": {"type": "STRING", "description": "..."},
+      "edits": {
+        "type": "ARRAY",
+        "description": "Batch multiple DIFFERENT edits...",
+        "items": {
+          "type": "OBJECT",
+          "properties": {
+            "match_text": {"type": "STRING", "description": "..."},
+            "new_string": {"type": "STRING", "description": "..."}
+          },
+          "required": ["match_text", "new_string"]
+        }
+      },
+      "expected_replacements": {"type": "INTEGER", "description": "..."},
+      "bypass_match_text_limit": {"type": "BOOLEAN", "description": "..."},
+      "session_path": {"type": "STRING", "description": "..."}
+    },
+    "required": ["path"]
+  }
+}
+```
+
+</details>
+
+**Key Observation:** Gemini uses uppercase type constants (`OBJECT`, `STRING`, `ARRAY`, `INTEGER`, `BOOLEAN`) while Claude sees lowercase (`object`, `string`, etc.). This is expected Gemini SDK behavior, not a bug. See LOG-002 Section 4 for transformation rules.
+
+---
+
+#### 9. Next Actions
+
+| Priority | Action | Owner | Effort |
+|----------|--------|-------|--------|
+| P0 | Implement Option A (doc updates) | TBD | Low |
+| P1 | Decide on Option B (APPEND_TO_FILE sentinel) | User | Decision |
+| P2 | Test with Gemini after doc updates | TBD | Medium |
+
+---
+
+#### 10. Citations & Sources
+
+| Item | Source | Location |
+|------|--------|----------|
+| Gemini debug transcript | `tmp.md` | Lines 1-300 (full file) |
+| Gemini schema report | `tmp.md` | Lines 150-250 (verbatim JSON) |
+| Claude runtime schema | MCP tool connection | System prompt injection |
+| Gemini type transformation spec | LOG-002 | Section 4 "Supported Fields" |
+| Auto-commit feature | LOG-007 | Full entry |
+| Core Tier definition | LOG-008 | Section 4 "Toolset Definition" |
+| Schema compatibility fix | LOG-006 | Full entry |
+
+---
+
+#### 11. Dependency Summary
+
+```mermaid
+flowchart TD
+    subgraph "propose_and_review Mode Selection"
+        START[Agent calls propose_and_review] --> CHECK_MATCH{match_text value?}
+        
+        CHECK_MATCH -->|'""'| CREATE[CREATE MODE<br/>New file, must not exist]
+        CHECK_MATCH -->|"OVERWRITE_FILE"| OVERWRITE[OVERWRITE MODE<br/>Replace entire content]
+        CHECK_MATCH -->|"<literal text>"| CHECK_EDITS{edits array<br/>provided?}
+        
+        CHECK_EDITS -->|"Yes"| BATCH[BATCH MODE<br/>Multiple find-replace]
+        CHECK_EDITS -->|"No"| SINGLE[SINGLE EDIT MODE<br/>One find-replace]
+        
+        CHECK_MATCH -->|"???"| APPEND[APPEND MODE<br/>❌ NOT DOCUMENTED]
+    end
+    
+    style APPEND fill:#ff6b6b,stroke:#c92a2a,color:#fff
+    style CREATE fill:#51cf66,stroke:#2f9e44
+    style OVERWRITE fill:#ffd43b,stroke:#fab005
+    style BATCH fill:#74c0fc,stroke:#1c7ed6
+    style SINGLE fill:#74c0fc,stroke:#1c7ed6
+```
+
+**Dependency Chain:** LOG-002 (spec) → LOG-006 (fix) → LOG-009 (semantic analysis)
+
+**Enables:** Future documentation improvements to `propose_and_review` tool description.
+
+---
+
+### [LOG-010] - [LOOP] - Agent Retry After MCP Timeout Creates Confusing Review State - Task: TOOL-UX
+
+**Date:** 2026-02-17
+**Session:** Creating test fixtures for LOG-009 gaps
+**Trigger:** Observed during fixture creation for `propose_and_review` gap testing
+
+---
+
+#### 1. Executive Summary
+
+**LOOP Captured:** When an MCP tool call times out, agents may immediately retry. If the first call actually succeeded (just slow), the retry creates a **second** review session. The user then sees a review prompt for an unexpected file, causing confusion about which edit they're approving.
+
+**Status:** Open question — needs design decision on retry behavior.
+
+**Dependencies:**
+- Related to: LOG-009 (semantic gaps in `propose_and_review`)
+- Context: Creating test fixtures per LOG-009 Section 9 action items
+
+---
+
+#### 2. Incident Narrative
+
+**What the agent attempted:**
+
+The agent (Claude) was creating test fixture files for the `propose_and_review` gap testing. It issued two parallel `propose_and_review` calls:
+
+```python
+# Call 1: Create sample_code.py
+propose_and_review(
+    path="tests/fixtures/propose_and_review_gaps/gap2_mode_exclusivity/sample_code.py",
+    match_text="",  # Create mode
+    new_string="..."
+)
+
+# Call 2: Create expected_result.py  
+propose_and_review(
+    path="tests/fixtures/propose_and_review_gaps/gap2_mode_exclusivity/expected_result.py",
+    match_text="",  # Create mode
+    new_string="..."
+)
+```
+
+**What happened:**
+
+```mermaid
+sequenceDiagram
+    participant Agent as Claude Agent
+    participant MCP as MCP Server
+    participant User as Human User
+    
+    Note over Agent: Issues 2 parallel propose_and_review calls
+    
+    Agent->>MCP: Call 1: Create sample_code.py
+    Agent->>MCP: Call 2: Create expected_result.py
+    
+    MCP--xAgent: Call 1: TIMEOUT (MCP error -32001)
+    MCP-->>Agent: Call 2: Returns REVIEW (user was AFK)
+    
+    Note over Agent: Agent sees Call 1 failed<br/>Doesn't know if it actually succeeded
+    
+    Note over User: Returns from AFK<br/>Sees review prompt for expected_result.py<br/>Confused: "Did the earlier one timeout?"
+    
+    User->>MCP: Adds comment in review:<br/>"one second the issue earlier<br/>did it time out the propose?"
+    
+    MCP-->>Agent: REVIEW response with user_feedback_diff<br/>containing user's confusion comment
+```
+
+**The confusion loop:**
+
+1. Agent issued parallel calls (valid optimization)
+2. Call 1 timed out from agent's perspective
+3. User was AFK, so Call 2 went to REVIEW state
+4. User returned, saw unexpected review prompt
+5. User couldn't tell if Call 1 succeeded or failed
+6. User added comment in review UI asking about the timeout
+7. Agent received the comment as `user_feedback_diff`
+
+---
+
+#### 3. Verbatim Evidence
+
+**MCP Error (Call 1):**
+```json
+{
+  "error": "McpError: MCP error -32001: MCP error -32001: Request timed out"
+}
+```
+
+**REVIEW Response (Call 2):**
+```json
+{
+  "session_path": "/var/folders/vh/058mlxnx3psf9fky9gzqnp0r0000gn/T/mcp_review_w9bu0st9",
+  "user_action": "REVIEW",
+  "message": "User provided feedback. A diff is included. Propose a new edit against the updated content.",
+  "user_feedback_diff": "--- a/future_expected_result.py (agent proposal)\n+++ b/future_expected_result.py (user feedback)\n@@ -1,5 +1,5 @@\n \"\"\"Sample module for testing mode exclusivity.\"\"\"\n-\n+# one second the issue ealrier did it time out the propose ? cause i was afk and then come back see you propose another one. this is a loop we need to capture. talk to me \n \n def new_function(x: int, y: int) -> int:\n     \"\"\"New function implementation.\n"
+}
+```
+
+**User's embedded question (from diff):**
+> "one second the issue earlier did it time out the propose ? cause i was afk and then come back see you propose another one. this is a loop we need to capture. talk to me"
+
+---
+
+#### 4. Root Cause Analysis
+
+```mermaid
+flowchart TD
+    subgraph "Timeout Ambiguity Problem"
+        TIMEOUT[MCP Timeout Error] --> QUESTION{Did the operation<br/>actually succeed?}
+        
+        QUESTION -->|Unknown| AMBIGUITY[Agent cannot know<br/>server-side state]
+        
+        AMBIGUITY --> RETRY_RISK[If agent retries:<br/>May create duplicate]
+        AMBIGUITY --> NO_RETRY_RISK[If agent doesn't retry:<br/>May lose user's work]
+    end
+    
+    subgraph "Compounding Factor"
+        PARALLEL[Parallel tool calls] --> INTERLEAVE[Results interleave]
+        INTERLEAVE --> CONFUSION[User sees review for<br/>file they didn't expect]
+    end
+    
+    style AMBIGUITY fill:#ff6b6b,stroke:#c92a2a,color:#fff
+    style CONFUSION fill:#ffd43b,stroke:#fab005
+```
+
+**Three contributing factors:**
+
+| Factor | Description | Mitigation |
+|--------|-------------|------------|
+| **Timeout ambiguity** | Agent can't know if timed-out operation succeeded on server | Server could return operation ID for status check |
+| **Parallel calls** | Multiple files in flight simultaneously | Agent could serialize file creation |
+| **User AFK** | Review prompt waited, user returned confused | UI could show pending review count |
+
+---
+
+#### 5. Open Questions
+
+| # | Question | Options | Status |
+|---|----------|---------|--------|
+| Q1 | Should agents retry after MCP timeout? | (a) Always retry, (b) Never retry, (c) Ask user | **OPEN** |
+| Q2 | Should `propose_and_review` return operation ID? | Enables status check after timeout | **OPEN** |
+| Q3 | Should parallel file creation be discouraged? | Trade-off: speed vs. clarity | **OPEN** |
+| Q4 | Should review UI show "N pending reviews"? | Helps user understand queue | **OPEN** |
+
+---
+
+#### 6. Proposed Guidance (Interim)
+
+Until design decisions are made, agents should follow this heuristic:
+
+**After MCP timeout on `propose_and_review`:**
+
+```mermaid
+flowchart TD
+    TIMEOUT[MCP Timeout] --> CHECK{Was it CREATE mode?<br/>match_text=""}
+    
+    CHECK -->|Yes| SAFE[Safe to retry:<br/>CREATE fails if file exists]
+    CHECK -->|No| UNSAFE[NOT safe to retry:<br/>May duplicate edit]
+    
+    UNSAFE --> ASK[Ask user:<br/>"Tool timed out. Should I retry<br/>or check file state first?"]
+    
+    SAFE --> RETRY[Retry the CREATE call]
+    
+    style UNSAFE fill:#ff6b6b,stroke:#c92a2a,color:#fff
+    style SAFE fill:#51cf66,stroke:#2f9e44
+    style ASK fill:#ffd43b,stroke:#fab005
+```
+
+**Rationale:** 
+- CREATE mode (`match_text=""`) is **idempotent** — if file already exists, the retry will fail with a clear error
+- EDIT mode is **NOT idempotent** — retry could apply the same edit twice
+
+---
+
+#### 7. Relation to LOG-009 Gaps
+
+This loop was discovered while creating test fixtures for LOG-009 (semantic gaps). It represents a **new gap category**: operational edge cases, not just documentation gaps.
+
+| LOG-009 Gap Type | This Loop |
+|------------------|-----------|
+| Documentation gap | ❌ No — timeout behavior isn't a docs issue |
+| Semantic gap | ❌ No — the tool semantics are clear |
+| **Operational gap** | ✅ Yes — runtime behavior causes confusion |
+
+**Implication:** LOG-009's fix scope may need expansion to include operational guidance, or this should be tracked as a separate work item.
+
+---
+
+#### 8. Test Fixture Status
+
+The timeout interrupted fixture creation. Current state:
+
+| Fixture | Status | Notes |
+|---------|--------|-------|
+| `gap1_append/sample_log.md` | ✅ Created | |
+| `gap1_append/expected_result.md` | ✅ Created | |
+| `gap2_mode_exclusivity/sample_code.py` | ❌ Timed out | Needs retry |
+| `gap2_mode_exclusivity/expected_result.py` | ⚠️ Partial | User commented in review, committed as-is |
+| `gap4_batch_priority/sample_code.py` | ❌ Not started | |
+| `gap4_batch_priority/expected_result.py` | ❌ Not started | |
+
+**Next action:** Complete fixture creation after this loop is documented.
+
+---
+
+#### 9. Citations & Sources
+
+| Item | Source | Location |
+|------|--------|----------|
+| Timeout error | This session | MCP response to parallel Call 1 |
+| User confusion comment | This session | `user_feedback_diff` in REVIEW response |
+| Fixture creation context | LOG-009 | Section 9 "Next Actions" |
+| `propose_and_review` modes | LOG-009 | Section 3 "5-in-1 Tool Architecture" |
+
+---
+
+#### 10. Dependency Summary
+
+```mermaid
+graph TD
+    subgraph "LOG-010 Context"
+        LOG009[LOG-009: Semantic Gaps<br/>Was creating test fixtures] --> LOG010[LOG-010: Timeout Loop<br/>Discovered during fixture creation]
+    end
+    
+    LOG010 --> FUTURE1[Future: Retry Guidance<br/>Agent behavior after timeout]
+    LOG010 --> FUTURE2[Future: Operation IDs<br/>Enable status checking]
+    LOG010 --> RESUME[Resume: Fixture Creation<br/>Complete gap1-4 fixtures]
+    
+    style LOG010 fill:#ffd43b,stroke:#fab005
+    style FUTURE1 fill:#e9ecef,stroke:#868e96
+    style FUTURE2 fill:#e9ecef,stroke:#868e96
+```
+
+**Dependency Chain:** LOG-009 (creating fixtures) → LOG-010 (timeout loop discovered)
+
+**Blocks:** Completion of test fixtures (need to resume after documenting this loop)
 
 ---

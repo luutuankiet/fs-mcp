@@ -262,6 +262,7 @@ def generate_token_efficient_hint(
 
 
 OVERWRITE_SENTINEL = "OVERWRITE_FILE"
+APPEND_SENTINEL = "APPEND_TO_FILE"
 
 # Backward compatibility alias
 OLD_STRING_MAX_LENGTH = MATCH_TEXT_MAX_LENGTH
@@ -306,7 +307,9 @@ class RooStyleEditTool:
                 return EditResult(success=False, message="No changes to apply.", error_type="validation_error")
 
             # If match_text is empty, it's a full rewrite of an existing file.
-            if not match_text:
+            if match_text == APPEND_SENTINEL:
+                new_content = normalized_content + new_string
+            elif not match_text:
                 new_content = new_string
             else:
                 occurrences = self.count_occurrences(normalized_content, normalized_match)
@@ -392,11 +395,16 @@ async def propose_and_review_logic(
                 edit_pairs[idx]['match_text'] = ""
             else:
                 match_text = ""
+        elif mt_val == APPEND_SENTINEL:
+            # User explicitly wants to append - ensure file exists
+            p = validate_path(path)
+            if not p.exists():
+                raise ValueError(f"File must exist for {APPEND_SENTINEL}.")
 
     # Check for match_text that is too long (>2000 characters)
     # Can be bypassed with bypass_match_text_limit=True for legitimate large section edits
     for idx, mt_val in enumerate(match_texts_to_validate):
-        if mt_val and mt_val != OVERWRITE_SENTINEL and len(mt_val) > MATCH_TEXT_MAX_LENGTH:
+        if mt_val and mt_val not in [OVERWRITE_SENTINEL, APPEND_SENTINEL] and len(mt_val) > MATCH_TEXT_MAX_LENGTH:
             if bypass_match_text_limit:
                 # User has explicitly opted to bypass the limit - this is a last resort
                 # Log a warning but allow the operation to proceed
@@ -422,6 +430,9 @@ async def propose_and_review_logic(
             for i, pair in enumerate(edit_pairs):
                 mt = tool.normalize_line_endings(pair['match_text'])
                 new_s = pair['new_string']
+                if mt == APPEND_SENTINEL:
+                    normalized += new_s
+                    continue
                 if mt and normalized.count(mt) != 1:
                     error_response = {
                         "error": True,
@@ -488,6 +499,9 @@ async def propose_and_review_logic(
             for i, pair in enumerate(edit_pairs):
                 mt = tool.normalize_line_endings(pair['match_text'])
                 new_s = pair['new_string']
+                if mt == APPEND_SENTINEL:
+                    normalized += new_s
+                    continue
                 if mt:
                     occurrences = tool.count_occurrences(normalized, mt)
                     if occurrences != 1:
@@ -506,19 +520,23 @@ async def propose_and_review_logic(
             future_file_path.write_text(active_proposal_content, encoding='utf-8')
         else:
             # --- SINGLE-EDIT CONTINUATION ---
-            occurrences = tool.count_occurrences(staged_content, match_text)
+            if match_text == APPEND_SENTINEL:
+                active_proposal_content = staged_content + new_string
+            else:
+                occurrences = tool.count_occurrences(staged_content, match_text)
 
-            if occurrences != 1:
-                error_response = {
-                    "error": True,
-                    "error_type": "validation_error",
-                    "message": f"Contextual patch failed. The provided 'match_text' was found {occurrences} times in the user's last version, but expected exactly 1.",
-                }
-                hint_info = generate_token_efficient_hint(match_text, staged_content, path, " (session)")
-                error_response.update(hint_info)
-                raise ValueError(json.dumps(error_response, indent=2))
+                if occurrences != 1:
+                    error_response = {
+                        "error": True,
+                        "error_type": "validation_error",
+                        "message": f"Contextual patch failed. The provided 'match_text' was found {occurrences} times in the user's last version, but expected exactly 1.",
+                    }
+                    hint_info = generate_token_efficient_hint(match_text, staged_content, path, " (session)")
+                    error_response.update(hint_info)
+                    raise ValueError(json.dumps(error_response, indent=2))
 
-            active_proposal_content = staged_content.replace(match_text, new_string, 1)
+                active_proposal_content = staged_content.replace(match_text, new_string, 1)
+
             future_file_path.write_text(active_proposal_content, encoding='utf-8')
         
 
@@ -540,6 +558,9 @@ async def propose_and_review_logic(
             for i, pair in enumerate(edit_pairs):
                 mt = tool.normalize_line_endings(pair['match_text'])
                 new_s = pair['new_string']
+                if mt == APPEND_SENTINEL:
+                    normalized += new_s
+                    continue
                 if mt:
                     occurrences = tool.count_occurrences(normalized, mt)
                     if occurrences == 0:

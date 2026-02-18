@@ -1,0 +1,161 @@
+Tool tier: CORE (excluded: append_text, grounding_search, list_directory, move_file, write_file)
+
+════════════════════════════════════════════════════════════════════
+📊 SCHEMA DIFF: propose_and_review
+════════════════════════════════════════════════════════════════════
+
+--- ORIGINAL
+{
+  "$defs": {
+    "EditPair": {
+      "description": "A single edit operation for batch editing. Provide the exact text to find (match_text) and its replacement (new_string).",
+      "properties": {
+        "match_text": {
+          "description": "Exact text to find. Must appear exactly once. Copy character-for-character including whitespace. Max 2000 chars.",
+          "type": "string"
+        },
+        "new_string": {
+          "description": "The replacement text that will replace match_text.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "match_text",
+        "new_string"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "bypass_match_text_limit": {
+      "default": false,
+      "description": "Set True to allow match_text over 2000 chars. Try using 'edits' to split into smaller chunks first.",
+      "type": "boolean"
+    },
+    "edits": {
+      "anyOf": [
+        {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/EditPair"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Batch multiple DIFFERENT edits in one call. More efficient than multiple tool calls.\n\nEXAMPLE:\nedits=[\n  {\"match_text\": \"old_name\", \"new_string\": \"new_name\"},\n  {\"match_text\": \"x = 1\", \"new_string\": \"x = 2\"}\n]\n\nRULES:\n- Each match_text must appear exactly ONCE in file\n- Edits apply in order (first edit runs, then second on the result, etc.)\n- Do NOT use for overlapping regions - split into separate calls instead\n- Max 2000 chars per match_text\n\nWHEN TO USE: Renaming something + updating its references in same file."
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "expected_replacements": {
+      "default": 1,
+      "description": "How many times match_text should appear. Default 1 = must be unique (ERRORS if found 0 or 2+ times). Set to N to replace all N occurrences.",
+      "type": "integer"
+    },
+    "match_text": {
+      "default": "",
+      "description": "The EXACT text to find and replace (LITERAL, not regex).\n\nWORKFLOW: Read file \u2192 Copy exact text \u2192 Paste here.\n\nWhitespace matters. Multi-line: use \\n between lines.\nExample: \"def foo():\\n    return 1\"\n\nSPECIAL: \"\" = new file, \"OVERWRITE_FILE\" = replace all.\n\nIf no match, error tells you why - just re-read and retry.\nMax 2000 chars.",
+      "type": "string"
+    },
+    "new_string": {
+      "default": "",
+      "description": "The replacement text.",
+      "type": "string"
+    },
+    "path": {
+      "description": "Path to the file to edit. Relative paths (e.g., 'src/main.py') or absolute paths both work.",
+      "type": "string"
+    },
+    "session_path": {
+      "anyOf": [
+        {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "ONLY for continuing after 'REVIEW' response. When user modifies your proposal, pass session_path here and set match_text to the USER's edited text (from user_feedback_diff), then new_string to your next proposal. Or call commit_review to accept user's version as-is."
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "path"
+  ],
+  "type": "object"
+}
+
++++ TRANSFORMED
+{
+  "properties": {
+    "bypass_match_text_limit": {
+      "description": "Set True to allow match_text over 2000 chars. Try using 'edits' to split into smaller chunks first.",
+      "type": "BOOLEAN"
+    },
+    "edits": {
+      "description": "Batch multiple DIFFERENT edits in one call. More efficient than multiple tool calls.\n\nEXAMPLE:\nedits=[\n  {\"match_text\": \"old_name\", \"new_string\": \"new_name\"},\n  {\"match_text\": \"x = 1\", \"new_string\": \"x = 2\"}\n]\n\nRULES:\n- Each match_text must appear exactly ONCE in file\n- Edits apply in order (first edit runs, then second on the result, etc.)\n- Do NOT use for overlapping regions - split into separate calls instead\n- Max 2000 chars per match_text\n\nWHEN TO USE: Renaming something + updating its references in same file.",
+      "items": {
+        "description": "A single edit operation for batch editing. Provide the exact text to find (match_text) and its replacement (new_string).",
+        "properties": {
+          "match_text": {
+            "description": "Exact text to find. Must appear exactly once. Copy character-for-character including whitespace. Max 2000 chars.",
+            "type": "STRING"
+          },
+          "new_string": {
+            "description": "The replacement text that will replace match_text.",
+            "type": "STRING"
+          }
+        },
+        "required": [
+          "match_text",
+          "new_string"
+        ],
+        "type": "OBJECT"
+      },
+      "nullable": true,
+      "type": "ARRAY"
+    },
+    "expected_replacements": {
+      "description": "How many times match_text should appear. Default 1 = must be unique (ERRORS if found 0 or 2+ times). Set to N to replace all N occurrences.",
+      "type": "INTEGER"
+    },
+    "match_text": {
+      "description": "The EXACT text to find and replace (LITERAL, not regex).\n\nWORKFLOW: Read file \u2192 Copy exact text \u2192 Paste here.\n\nWhitespace matters. Multi-line: use \\n between lines.\nExample: \"def foo():\\n    return 1\"\n\nSPECIAL: \"\" = new file, \"OVERWRITE_FILE\" = replace all.\n\nIf no match, error tells you why - just re-read and retry.\nMax 2000 chars.",
+      "type": "STRING"
+    },
+    "new_string": {
+      "description": "The replacement text.",
+      "type": "STRING"
+    },
+    "path": {
+      "description": "Path to the file to edit. Relative paths (e.g., 'src/main.py') or absolute paths both work.",
+      "type": "STRING"
+    },
+    "session_path": {
+      "description": "ONLY for continuing after 'REVIEW' response. When user modifies your proposal, pass session_path here and set match_text to the USER's edited text (from user_feedback_diff), then new_string to your next proposal. Or call commit_review to accept user's version as-is.",
+      "nullable": true,
+      "type": "STRING"
+    }
+  },
+  "required": [
+    "path"
+  ],
+  "type": "OBJECT"
+}
+

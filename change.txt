@@ -1,0 +1,193 @@
+diff --git a/src/fs_mcp/edit_tool.py b/src/fs_mcp/edit_tool.py
+index 02e50b2..6fbdbad 100644
+--- a/src/fs_mcp/edit_tool.py
++++ b/src/fs_mcp/edit_tool.py
+@@ -262,6 +262,7 @@ def generate_token_efficient_hint(
+ 
+ 
+ OVERWRITE_SENTINEL = "OVERWRITE_FILE"
++APPEND_SENTINEL = "APPEND_TO_FILE"
+ 
+ # Backward compatibility alias
+ OLD_STRING_MAX_LENGTH = MATCH_TEXT_MAX_LENGTH
+@@ -306,7 +307,9 @@ class RooStyleEditTool:
+                 return EditResult(success=False, message="No changes to apply.", error_type="validation_error")
+ 
+             # If match_text is empty, it's a full rewrite of an existing file.
+-            if not match_text:
++            if match_text == APPEND_SENTINEL:
++                new_content = normalized_content + new_string
++            elif not match_text:
+                 new_content = new_string
+             else:
+                 occurrences = self.count_occurrences(normalized_content, normalized_match)
+@@ -392,11 +395,16 @@ async def propose_and_review_logic(
+                 edit_pairs[idx]['match_text'] = ""
+             else:
+                 match_text = ""
++        elif mt_val == APPEND_SENTINEL:
++            # User explicitly wants to append - ensure file exists
++            p = validate_path(path)
++            if not p.exists():
++                raise ValueError(f"File must exist for {APPEND_SENTINEL}.")
+ 
+     # Check for match_text that is too long (>2000 characters)
+     # Can be bypassed with bypass_match_text_limit=True for legitimate large section edits
+     for idx, mt_val in enumerate(match_texts_to_validate):
+-        if mt_val and mt_val != OVERWRITE_SENTINEL and len(mt_val) > MATCH_TEXT_MAX_LENGTH:
++        if mt_val and mt_val not in [OVERWRITE_SENTINEL, APPEND_SENTINEL] and len(mt_val) > MATCH_TEXT_MAX_LENGTH:
+             if bypass_match_text_limit:
+                 # User has explicitly opted to bypass the limit - this is a last resort
+                 # Log a warning but allow the operation to proceed
+@@ -422,6 +430,9 @@ async def propose_and_review_logic(
+             for i, pair in enumerate(edit_pairs):
+                 mt = tool.normalize_line_endings(pair['match_text'])
+                 new_s = pair['new_string']
++                if mt == APPEND_SENTINEL:
++                    normalized += new_s
++                    continue
+                 if mt and normalized.count(mt) != 1:
+                     error_response = {
+                         "error": True,
+@@ -488,6 +499,9 @@ async def propose_and_review_logic(
+             for i, pair in enumerate(edit_pairs):
+                 mt = tool.normalize_line_endings(pair['match_text'])
+                 new_s = pair['new_string']
++                if mt == APPEND_SENTINEL:
++                    normalized += new_s
++                    continue
+                 if mt:
+                     occurrences = tool.count_occurrences(normalized, mt)
+                     if occurrences != 1:
+@@ -506,19 +520,23 @@ async def propose_and_review_logic(
+             future_file_path.write_text(active_proposal_content, encoding='utf-8')
+         else:
+             # --- SINGLE-EDIT CONTINUATION ---
+-            occurrences = tool.count_occurrences(staged_content, match_text)
++            if match_text == APPEND_SENTINEL:
++                active_proposal_content = staged_content + new_string
++            else:
++                occurrences = tool.count_occurrences(staged_content, match_text)
+ 
+-            if occurrences != 1:
+-                error_response = {
+-                    "error": True,
+-                    "error_type": "validation_error",
+-                    "message": f"Contextual patch failed. The provided 'match_text' was found {occurrences} times in the user's last version, but expected exactly 1.",
+-                }
+-                hint_info = generate_token_efficient_hint(match_text, staged_content, path, " (session)")
+-                error_response.update(hint_info)
+-                raise ValueError(json.dumps(error_response, indent=2))
++                if occurrences != 1:
++                    error_response = {
++                        "error": True,
++                        "error_type": "validation_error",
++                        "message": f"Contextual patch failed. The provided 'match_text' was found {occurrences} times in the user's last version, but expected exactly 1.",
++                    }
++                    hint_info = generate_token_efficient_hint(match_text, staged_content, path, " (session)")
++                    error_response.update(hint_info)
++                    raise ValueError(json.dumps(error_response, indent=2))
++
++                active_proposal_content = staged_content.replace(match_text, new_string, 1)
+ 
+-            active_proposal_content = staged_content.replace(match_text, new_string, 1)
+             future_file_path.write_text(active_proposal_content, encoding='utf-8')
+         
+ 
+@@ -540,6 +558,9 @@ async def propose_and_review_logic(
+             for i, pair in enumerate(edit_pairs):
+                 mt = tool.normalize_line_endings(pair['match_text'])
+                 new_s = pair['new_string']
++                if mt == APPEND_SENTINEL:
++                    normalized += new_s
++                    continue
+                 if mt:
+                     occurrences = tool.count_occurrences(normalized, mt)
+                     if occurrences == 0:
+diff --git a/src/fs_mcp/server.py b/src/fs_mcp/server.py
+index 838281c..7d2a785 100644
+--- a/src/fs_mcp/server.py
++++ b/src/fs_mcp/server.py
+@@ -32,7 +32,7 @@ WORKFLOW: Read file → Copy exact text → Paste here.
+ Whitespace matters. Multi-line: use \\n between lines.
+ Example: "def foo():\\n    return 1"
+ 
+-SPECIAL: "" = new file, "OVERWRITE_FILE" = replace all.
++SPECIAL: "" = new file, "OVERWRITE_FILE" = replace all, "APPEND_TO_FILE" = append to end.
+ 
+ If no match, error tells you why - just re-read and retry.
+ Max {MATCH_TEXT_MAX_LENGTH} chars."""
+@@ -51,7 +51,7 @@ RULES:
+ - Do NOT use for overlapping regions - split into separate calls instead
+ - Max {MATCH_TEXT_MAX_LENGTH} chars per match_text
+ 
+-WHEN TO USE: Renaming something + updating its references in same file."""
++WHEN TO USE: ANY time you make 2+ changes to the same file. Saves tokens and review cycles."""
+ 
+ EDIT_PAIR_MATCH_TEXT_DESCRIPTION = f"""Exact text to find. Must appear exactly once. Copy character-for-character including whitespace. Max {MATCH_TEXT_MAX_LENGTH} chars."""
+ 
+@@ -812,17 +812,27 @@ async def propose_and_review(
+     """
+     Edit a file with human review. Returns COMMITTED or REVIEW response.
+ 
+-    ════════════════════════════════════════════════════════════════════
++    ##
+     QUICK REFERENCE (copy these patterns)
+-    ════════════════════════════════════════════════════════════════════
++    
+ 
+     EDIT FILE:    propose_and_review(path="file.py", match_text="old", new_string="new")
+     NEW FILE:     propose_and_review(path="new.py", match_text="", new_string="content")
++    APPEND FILE:  propose_and_review(path="file.py", match_text="APPEND_TO_FILE", new_string="content")
+     BATCH EDIT:   propose_and_review(path="file.py", edits=[{"match_text":"a","new_string":"b"}])
+ 
+-    ════════════════════════════════════════════════════════════════════
++    ##
++    MODES (Mutually Exclusive)
++
++    1. SINGLE EDIT:  path + match_text + new_string
++    2. BATCH EDIT:   path + edits (array of {match_text, new_string})
++    3. NEW FILE:     path + match_text="" + new_string
++    4. OVERWRITE:    path + match_text="OVERWRITE_FILE" + new_string
++    5. APPEND:       path + match_text="APPEND_TO_FILE" + new_string
++
++    ##
+     WORKFLOW: READ FILE → COPY EXACT TEXT → PASTE AS match_text
+-    ════════════════════════════════════════════════════════════════════
++    
+ 
+     match_text must be LITERAL and EXACT (not regex). Whitespace matters.
+ 
+@@ -832,9 +842,9 @@ async def propose_and_review(
+     Multi-line example (file has "def foo():" on one line, "    return 1" on next):
+       match_text="def foo():\\n    return 1"
+ 
+-    ════════════════════════════════════════════════════════════════════
++    ##
+     RESPONSE HANDLING
+-    ════════════════════════════════════════════════════════════════════
++    
+ 
+     IF "COMMITTED": File has been written. No further action needed.
+ 
+@@ -843,15 +853,16 @@ async def propose_and_review(
+       - user_feedback_diff: Shows what user changed
+       Next call: match_text = user's edited version (not yours)
+ 
+-    ════════════════════════════════════════════════════════════════════
++    ##
+     SPECIAL VALUES FOR match_text
+-    ════════════════════════════════════════════════════════════════════
++    
+     ""              = Create new file (file must not exist)
+     "OVERWRITE_FILE" = Replace entire file content
++    "APPEND_TO_FILE" = Append new_string to end (file must exist)
+ 
+-    ════════════════════════════════════════════════════════════════════
++    ##
+     NOTES
+-    ════════════════════════════════════════════════════════════════════
++    
+     - Paths: relative ("src/main.py") or absolute both work
+     - expected_replacements=1 means match must be unique (errors if 0 or 2+ found)
+     - user_feedback_diff is a unified diff showing exactly what user changed

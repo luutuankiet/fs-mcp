@@ -420,62 +420,6 @@ async def propose_and_review_logic(
                 error_msg = f"Edit {idx}: {error_msg}"
             raise ValueError(error_msg)
 
-    # --- GSD-Lite Auto-Approve ---
-    if 'gsd-lite' in Path(path).parts:
-        tool = RooStyleEditTool(validate_path)
-        if edit_pairs:
-            p = validate_path(path)
-            content = p.read_text(encoding='utf-8') if p.exists() else ""
-            normalized = tool.normalize_line_endings(content)
-            for i, pair in enumerate(edit_pairs):
-                mt = tool.normalize_line_endings(pair['match_text'])
-                new_s = pair['new_string']
-                if mt == APPEND_SENTINEL:
-                    normalized += new_s
-                    continue
-                if mt and normalized.count(mt) != 1:
-                    error_response = {
-                        "error": True,
-                        "error_type": "validation_error",
-                        "message": f"Edit {i}: match_text found {normalized.count(mt)} times, expected 1.",
-                    }
-                    hint_info = generate_token_efficient_hint(mt, content, path, f" (edit {i})")
-                    error_response.update(hint_info)
-                    raise ValueError(json.dumps(error_response, indent=2))
-                normalized = normalized.replace(mt, new_s, 1) if mt else new_s
-            p.write_text(normalized, encoding='utf-8')
-            response = {
-                "user_action": "AUTO_APPROVED",
-                "message": f"Auto-approved and committed {len(edit_pairs)} edits to '{path}' because it is in the 'gsd_lite' directory.",
-                "session_path": None
-            }
-            return json.dumps(response, indent=2)
-        else:
-            prep_result = tool._prepare_edit(path, match_text, new_string, expected_replacements)
-            if not prep_result.success:
-                error_response = {
-                    "error": True,
-                    "error_type": prep_result.error_type,
-                    "message": f"Edit preparation failed: {prep_result.message}",
-                }
-                if prep_result.error_type == "validation_error":
-                    p = Path(path)
-                    if p.exists():
-                        content = p.read_text(encoding='utf-8')
-                        hint_info = generate_token_efficient_hint(match_text, content, path)
-                        error_response.update(hint_info)
-                raise ValueError(json.dumps(error_response, indent=2))
-
-            if prep_result.new_content is not None:
-                p = validate_path(path)
-                p.write_text(prep_result.new_content, encoding='utf-8')
-
-            response = {
-                "user_action": "AUTO_APPROVED",
-                "message": f"Auto-approved and committed changes to '{path}' because it is in the 'gsd_lite' directory.",
-                "session_path": None
-            }
-            return json.dumps(response, indent=2)
 
     tool = RooStyleEditTool(validate_path)
     original_path_obj = Path(path)

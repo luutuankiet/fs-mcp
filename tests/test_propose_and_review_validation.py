@@ -594,3 +594,28 @@ class TestAutoCommitOnApproval:
         # REVIEW path is unchanged - session_path is preserved
         # Verified by code inspection: only the is_approved branch deletes it
         pass
+
+class TestDangerousModeBypass:
+    """Tests for dangerous mode that skips interactive review."""
+
+    @pytest.mark.asyncio
+    async def test_dangerous_mode_commits_without_human_review(self, temp_env):
+        """dangerous_skip_permissions=True should commit immediately."""
+        import json
+
+        response = await propose_and_review_logic(
+            validate_path=temp_env["validate_path"],
+            IS_VSCODE_CLI_AVAILABLE=False,
+            path=str(temp_env["test_file"]),
+            new_string="return 'danger'",
+            match_text="return 'world'",
+            expected_replacements=1,
+            dangerous_skip_permissions=True,
+        )
+
+        payload = json.loads(response)
+        assert payload["user_action"] == "COMMITTED"
+        assert "without human review" in payload["message"]
+
+        updated = temp_env["test_file"].read_text(encoding="utf-8")
+        assert "return 'danger'" in updated

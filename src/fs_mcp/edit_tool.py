@@ -333,7 +333,8 @@ async def propose_and_review_logic(
     expected_replacements: int = 1,
     session_path: Optional[str] = None,
     edits: Optional[list] = None,
-    bypass_match_text_limit: bool = False
+    bypass_match_text_limit: bool = False,
+    dangerous_skip_permissions: bool = False,
 ) -> str:
     # --- Validate multi-edit parameter ---
     edit_pairs = None
@@ -560,7 +561,27 @@ async def propose_and_review_logic(
             if active_proposal_content is not None:
                 future_file_path.write_text(active_proposal_content, encoding='utf-8')
 
-    # --- Step 2: Display, Launch, and Wait for Human ---
+    # --- Step 2: Dangerous mode bypass (skip interactive human review) ---
+    if dangerous_skip_permissions:
+        original_file = validate_path(path)
+        final_content = (active_proposal_content or "").rstrip('\n')
+        try:
+            original_file.write_text(final_content, encoding='utf-8')
+        except Exception as e:
+            raise IOError(f"Failed to write final content to {path}: {e}")
+
+        response = {
+            "user_action": "COMMITTED",
+            "message": f"Dangerous mode active (FS_MCP_FLAG). Changes committed to '{path}' without human review.",
+        }
+        try:
+            if temp_dir.exists():
+                shutil.rmtree(temp_dir)
+        except Exception as e:
+            response["message"] += f" Session cleanup failed: {e}"
+        return json.dumps(response, indent=2)
+
+    # --- Step 3: Display, Launch, and Wait for Human ---
     vscode_command = f'code --diff "{current_file_path}" "{future_file_path}"'
     
     print(f"\n--- WAITING FOR HUMAN REVIEW ---\nPlease review the proposed changes in VS Code:\n\n{vscode_command}\n")
@@ -575,8 +596,7 @@ async def propose_and_review_logic(
     initial_mod_time = future_file_path.stat().st_mtime
     while True:
         await asyncio.sleep(1)
-        if future_file_path.stat().st_mtime > initial_mod_time: break
-    
+        if future_file_path.stat().st_mtime > initial_mod_time: break    
     # --- Step 3: Interpret User's Action ---
     user_edited_content = future_file_path.read_text(encoding='utf-8')
     response = {"session_path": str(temp_dir)}

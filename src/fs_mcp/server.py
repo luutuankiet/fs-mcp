@@ -83,6 +83,7 @@ class EditPair(BaseModel):
 # --- Global Configuration ---
 USER_ACCESSIBLE_DIRS: List[Path] = []
 ALLOWED_DIRS: List[Path] = []
+DANGEROUS_SKIP_PERMISSIONS_FLAG = "FS_MCP_FLAG"
 mcp = FastMCP("filesystem", stateless_http=True)
 IS_VSCODE_CLI_AVAILABLE = False
 IS_RIPGREP_AVAILABLE = False
@@ -225,6 +226,20 @@ def _apply_gemini_schema_transforms():
         if tool.parameters:
             tool.parameters = make_gemini_compatible(tool.parameters)
 
+def _dangerous_skip_permissions_enabled() -> bool:
+    """
+    Return True when the workspace root contains the FS_MCP_FLAG sentinel file.
+
+    Checked on every validation call so creating or deleting the flag takes
+    effect immediately without restarting fs-mcp.
+    """
+    if not USER_ACCESSIBLE_DIRS:
+        return False
+
+    flag_path = USER_ACCESSIBLE_DIRS[0] / DANGEROUS_SKIP_PERMISSIONS_FLAG
+    return flag_path.is_file()
+
+
 def validate_path(requested_path: str) -> Path:
     """
     Security barrier: Ensures path is within ALLOWED_DIRS.
@@ -253,6 +268,9 @@ def validate_path(requested_path: str) -> Path:
     except Exception:
         # Fallback for paths that might not exist yet but are being created.
         path_obj = p.absolute()
+
+    if _dangerous_skip_permissions_enabled():
+        return path_obj
 
     is_allowed = any(
         str(path_obj).startswith(str(allowed)) 
@@ -866,6 +884,7 @@ async def propose_and_review(
     - Paths: relative ("src/main.py") or absolute both work
     - expected_replacements=1 means match must be unique (errors if 0 or 2+ found)
     - user_feedback_diff is a unified diff showing exactly what user changed
+    - If workspace root contains `FS_MCP_FLAG`, this tool skips interactive review and commits directly
     """
     return await propose_and_review_logic(
         validate_path,
@@ -876,7 +895,8 @@ async def propose_and_review(
         expected_replacements,
         session_path,
         edits,
-        bypass_match_text_limit
+        bypass_match_text_limit,
+        dangerous_skip_permissions=_dangerous_skip_permissions_enabled(),
     )
 
 @mcp.tool()

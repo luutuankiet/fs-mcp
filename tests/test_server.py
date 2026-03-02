@@ -17,6 +17,64 @@ def test_security_barrier(temp_env):
     with pytest.raises(ValueError, match="Access denied"):
         server.validate_path(str(outside))
 
+
+def test_flag_toggle_dangerous_skip_permissions(temp_env):
+    """FS_MCP_FLAG should enable broad access and disable immediately when removed."""
+    outside = Path("/etc/passwd")
+
+    with pytest.raises(ValueError, match="Access denied"):
+        server.validate_path(str(outside))
+
+    flag = temp_env / server.DANGEROUS_SKIP_PERMISSIONS_FLAG
+    flag.write_text("enable dangerous skip", encoding="utf-8")
+
+    resolved = server.validate_path(str(outside))
+    assert resolved == outside.resolve()
+
+    flag.unlink()
+
+    with pytest.raises(ValueError, match="Access denied"):
+        server.validate_path(str(outside))
+
+
+@pytest.mark.asyncio
+async def test_propose_and_review_receives_dangerous_flag_state(temp_env, monkeypatch):
+    """propose_and_review should forward FS_MCP_FLAG state to edit logic."""
+    observed_flags = []
+
+    async def fake_propose_and_review_logic(*args, **kwargs):
+        observed_flags.append(kwargs.get("dangerous_skip_permissions"))
+        return "ok"
+
+    monkeypatch.setattr(server, "propose_and_review_logic", fake_propose_and_review_logic)
+
+    await server.propose_and_review.fn(
+        path=str(temp_env / "dummy.txt"),
+        new_string="new",
+        match_text="old",
+        expected_replacements=1,
+        session_path=None,
+        edits=None,
+        bypass_match_text_limit=False,
+    )
+    assert observed_flags[-1] is False
+
+    flag = temp_env / server.DANGEROUS_SKIP_PERMISSIONS_FLAG
+    flag.write_text("enable dangerous skip", encoding="utf-8")
+
+    await server.propose_and_review.fn(
+        path=str(temp_env / "dummy.txt"),
+        new_string="new",
+        match_text="old",
+        expected_replacements=1,
+        session_path=None,
+        edits=None,
+        bypass_match_text_limit=False,
+    )
+    assert observed_flags[-1] is True
+
+
+
 def test_write_and_read(temp_env):
     """Test basic read/write tools"""
     target = temp_env / "test.txt"

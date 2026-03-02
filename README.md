@@ -70,6 +70,7 @@ sequenceDiagram
 - Full overwrites require explicit `OVERWRITE_FILE` sentinel
 - Batch edits with `edits=[]` for multiple changes in one call
 - Session-based workflow prevents race conditions
+- Optional dangerous mode: create `FS_MCP_FLAG` in the workspace root to bypass path restrictions and auto-commit `propose_and_review` edits without human review until the file is deleted
 
 ### 3. Universal Provider Compatibility
 

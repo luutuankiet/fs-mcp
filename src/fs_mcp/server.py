@@ -6,7 +6,7 @@ import base64
 import mimetypes
 import fnmatch
 from pathlib import Path
-from typing import List, Optional, Literal, Dict, Annotated
+from typing import List, Optional, Literal, Dict, Annotated, Tuple
 from datetime import datetime
 from dataclasses import dataclass
 from pydantic import BaseModel, Field
@@ -59,19 +59,35 @@ LARGE_FILE_PASSTHROUGH_DESCRIPTION = f"Set True to read large JSON/YAML files (>
 
 BYPASS_MATCH_TEXT_LIMIT_DESCRIPTION = f"Set True to allow match_text over {MATCH_TEXT_MAX_LENGTH} chars. Try using 'edits' to split into smaller chunks first."
 
+READ_MODE_HEAD_DESCRIPTION = "Number of lines to read from the beginning of the file. Cannot be mixed with start_line/end_line."
+READ_MODE_TAIL_DESCRIPTION = "Number of lines to read from the end of the file. Cannot be mixed with start_line/end_line."
+READ_MODE_START_LINE_DESCRIPTION = "The 1-based line number to start reading from. Use with end_line for a range, or with read_to_next_pattern for section-aware reading."
+READ_MODE_END_LINE_DESCRIPTION = "The 1-based line number to stop reading at (inclusive). Cannot be used with read_to_next_pattern."
+READ_MODE_PATTERN_DESCRIPTION = "A regex pattern for section-aware reading. Reads from start_line until a line matching this pattern is found (exclusive). Useful for reading entire functions/classes. REQUIRES start_line. Cannot be used with end_line."
+
 # --- Pydantic Models for Tool Arguments ---
 
+class FileReadSpec(BaseModel):
+    """A single read specification. Reading mode fields are mutually exclusive within this object."""
+    head: Optional[int] = Field(default=None, description=READ_MODE_HEAD_DESCRIPTION)
+    tail: Optional[int] = Field(default=None, description=READ_MODE_TAIL_DESCRIPTION)
+    start_line: Optional[int] = Field(default=None, description=READ_MODE_START_LINE_DESCRIPTION)
+    end_line: Optional[int] = Field(default=None, description=READ_MODE_END_LINE_DESCRIPTION)
+    read_to_next_pattern: Optional[str] = Field(default=None, description=READ_MODE_PATTERN_DESCRIPTION)
+
+
 class FileReadRequest(BaseModel):
-    """A request to read a file with various reading modes. Modes are mutually exclusive."""
+    """A request to read a file. Supports one legacy mode or multiple read specs via `reads`."""
     path: str = Field(description="The path to the file to read. Prefer relative paths.")
-    head: Optional[int] = Field(default=None, description="Number of lines to read from the beginning of the file. Cannot be mixed with start_line/end_line.")
-    tail: Optional[int] = Field(default=None, description="Number of lines to read from the end of the file. Cannot be mixed with start_line/end_line.")
-    start_line: Optional[int] = Field(default=None, description="The 1-based line number to start reading from. Use with end_line for a range, or with read_to_next_pattern for section-aware reading.")
-    end_line: Optional[int] = Field(default=None, description="The 1-based line number to stop reading at (inclusive). Cannot be used with read_to_next_pattern.")
-    read_to_next_pattern: Optional[str] = Field(
+    reads: Optional[List[FileReadSpec]] = Field(
         default=None,
-        description="A regex pattern for section-aware reading. Reads from start_line until a line matching this pattern is found (exclusive). Useful for reading entire functions/classes. REQUIRES start_line. Cannot be used with end_line."
+        description="Optional list of read specifications for this file. Use this for multi-location surgical reads in one request. Cannot be combined with top-level head/tail/start_line/end_line/read_to_next_pattern fields."
     )
+    head: Optional[int] = Field(default=None, description=READ_MODE_HEAD_DESCRIPTION)
+    tail: Optional[int] = Field(default=None, description=READ_MODE_TAIL_DESCRIPTION)
+    start_line: Optional[int] = Field(default=None, description=READ_MODE_START_LINE_DESCRIPTION)
+    end_line: Optional[int] = Field(default=None, description=READ_MODE_END_LINE_DESCRIPTION)
+    read_to_next_pattern: Optional[str] = Field(default=None, description=READ_MODE_PATTERN_DESCRIPTION)
 
 
 class EditPair(BaseModel):
@@ -315,7 +331,7 @@ def list_allowed_directories() -> str:
 def read_files(
     files: Annotated[
         List[FileReadRequest],
-        Field(description="A list of file read requests. WORKFLOW: Use grep_content FIRST to find line numbers and section boundaries, then use read_files for targeted reading of only the relevant sections. This preserves context. Reading modes: full file (path only), head/tail (first/last N lines), line range (start_line/end_line), or section-aware (start_line + read_to_next_pattern for reading until next function/class).")
+        Field(description="A list of file read requests. WORKFLOW: Use grep_content FIRST to find line numbers and section boundaries, then use read_files for targeted reading of only the relevant sections. This preserves context. Each entry accepts either one legacy mode (path-only, head/tail, line range, section-aware) or a `reads` array with multiple mode specs for the same file.")
     ],
     large_file_passthrough: Annotated[
         bool,
@@ -329,12 +345,23 @@ def read_files(
 
     **Reading Modes:**
     1.  **Full File:** Provide just the `path`.
-    2.  **Head/Tail:** Use `head` or `tail` to read the beginning or end of a file.
+    2.  **Head/Tail:** Use `head` or `tail` to read the beginning or end of the file.
     3.  **Line Range:** Use `start_line` and `end_line` to read a specific slice.
-    4.  **Section-Aware (New):** Use `start_line` and `read_to_next_pattern` to read from a starting point until a regex pattern is found. This is useful for reading entire functions or classes without knowing the exact end line.
+    4.  **Section-Aware:** Use `start_line` and `read_to_next_pattern` to read until the next pattern match.
+    5.  **Multi-Read Per File:** Use `reads` to request multiple slices from the same file in one request.
+
+    **Multi-Read Example:**
+    ```
+    read_files([{
+        "path": "src/fs_mcp/server.py",
+        "reads": [
+            {"head": 40},
+            {"start_line": 331, "end_line": 380}
+        ]
+    }])
+    ```
 
     **Section-Aware Reading Example:**
-    To read a Python function definition:
     ```
     read_files([{
         "path": "src/fs_mcp/server.py",
@@ -345,43 +372,180 @@ def read_files(
     This reads from line 90 until the *next* line that starts with "def ", effectively capturing the whole function. The pattern search starts on the line *after* `start_line`. If the pattern is not found, it reads to the end of the file.
 
     **Parameter mutual exclusivity:**
-    - `head`/`tail` cannot be mixed with `start_line`/`end_line`.
+    - Within one read spec, `head` and `tail` are mutually exclusive.
+    - Within one read spec, `head` or `tail` cannot be mixed with `start_line` or `end_line`.
     - `end_line` cannot be used with `read_to_next_pattern`.
+    - `read_to_next_pattern` requires `start_line`.
+    - `reads` cannot be combined with top-level `head`/`tail`/`start_line`/`end_line`/`read_to_next_pattern`.
 
     **Workflow Synergy with `grep_content`:**
     This tool is the second step in the efficient "grep -> read" workflow. After using `grep_content`
     to find relevant files and line numbers, use this tool to perform a targeted read of only
     those specific sections.
     """
+    def _uses_top_level_mode_fields(request: FileReadRequest) -> bool:
+        return any(
+            value is not None
+            for value in (
+                request.head,
+                request.tail,
+                request.start_line,
+                request.end_line,
+                request.read_to_next_pattern,
+            )
+        )
+
+    def _normalize_read_specs(request: FileReadRequest) -> Tuple[List[FileReadSpec], Optional[str]]:
+        if request.reads is not None:
+            if _uses_top_level_mode_fields(request):
+                return [], (
+                    "Error: Invalid request shape.\n\n"
+                    "You provided both `reads` and top-level read mode fields.\n"
+                    "Problem: `reads` cannot be combined with top-level `head`/`tail`/`start_line`/`end_line`/`read_to_next_pattern`.\n"
+                    "Fix: Move all read mode fields into `reads`, or remove `reads` and use legacy single-mode fields."
+                )
+
+            if len(request.reads) == 0:
+                return [], (
+                    "Error: Invalid request shape.\n\n"
+                    "You provided: `reads=[]`.\n"
+                    "Problem: `reads` must contain at least one read specification.\n"
+                    "Fix: Add one or more read specs, e.g. `reads=[{\"head\": 50}]`."
+                )
+
+            return request.reads, None
+
+        return [
+            FileReadSpec(
+                head=request.head,
+                tail=request.tail,
+                start_line=request.start_line,
+                end_line=request.end_line,
+                read_to_next_pattern=request.read_to_next_pattern,
+            )
+        ], None
+
+    def _describe_read_spec(read_spec: FileReadSpec) -> str:
+        if read_spec.head is not None:
+            return f"head={read_spec.head}"
+        if read_spec.tail is not None:
+            return f"tail={read_spec.tail}"
+        if read_spec.read_to_next_pattern is not None:
+            start_line = read_spec.start_line if read_spec.start_line is not None else 1
+            return f"start_line={start_line}, read_to_next_pattern={read_spec.read_to_next_pattern!r}"
+        if read_spec.start_line is not None or read_spec.end_line is not None:
+            start_line = read_spec.start_line if read_spec.start_line is not None else 1
+            end_line = read_spec.end_line if read_spec.end_line is not None else "EOF"
+            return f"range={start_line}:{end_line}"
+        return "full_file"
+
+    def _validate_read_spec(read_spec: FileReadSpec) -> Optional[str]:
+        if read_spec.head is not None and read_spec.tail is not None:
+            return (
+                "Error: Mutually exclusive parameters provided.\n\n"
+                f"You provided: head={read_spec.head}, tail={read_spec.tail}\n"
+                "Problem: `head` and `tail` cannot be used together in the same read spec.\n"
+                "Fix: Choose either `head` or `tail`."
+            )
+
+        if (read_spec.head is not None or read_spec.tail is not None) and (
+            read_spec.start_line is not None or read_spec.end_line is not None
+        ):
+            return (
+                "Error: Mutually exclusive parameters provided.\n\n"
+                f"You provided: head={read_spec.head}, tail={read_spec.tail}, "
+                f"start_line={read_spec.start_line}, end_line={read_spec.end_line}\n"
+                "Problem: `head`/`tail` cannot be mixed with `start_line`/`end_line`.\n"
+                "Fix: Use one mode per read spec."
+            )
+
+        if read_spec.end_line is not None and read_spec.read_to_next_pattern is not None:
+            return (
+                "Error: Mutually exclusive parameters provided.\n\n"
+                f"You provided: end_line={read_spec.end_line}, read_to_next_pattern={read_spec.read_to_next_pattern!r}\n"
+                "Problem: `end_line` and `read_to_next_pattern` cannot be used together.\n"
+                "Fix: Choose one method for defining the read boundary."
+            )
+
+        if read_spec.read_to_next_pattern and read_spec.start_line is None:
+            return (
+                "Error: Missing required parameter.\n\n"
+                f"You provided: read_to_next_pattern={read_spec.read_to_next_pattern!r} without `start_line`.\n"
+                "Problem: `read_to_next_pattern` requires a `start_line` to know where to begin scanning.\n"
+                "Fix: Provide a `start_line`."
+            )
+
+        return None
+
+    def _read_content_for_spec(path_obj: Path, file_path: str, read_spec: FileReadSpec) -> str:
+        with open(path_obj, 'r', encoding='utf-8') as f:
+            if read_spec.read_to_next_pattern:
+                start_line = read_spec.start_line
+                if start_line is None:
+                    return "Error: start_line is required for read_to_next_pattern."
+
+                pattern = read_spec.read_to_next_pattern
+                lines_to_read = []
+                pattern_found = False
+
+                # islice uses 0-based indexing, so subtract 1
+                line_iterator = itertools.islice(f, start_line - 1, None)
+
+                try:
+                    first_line = next(line_iterator)
+                    lines_to_read.append(first_line)
+                except StopIteration:
+                    # To get total lines, we need to read the file again unfortunately
+                    with open(path_obj, 'r', encoding='utf-8') as count_f:
+                        total_lines = sum(1 for _ in count_f)
+
+                    return (
+                        "Error: Invalid start_line.\n\n"
+                        f"You provided: start_line={start_line}\n"
+                        f"Problem: The file '{file_path}' only has {total_lines} lines.\n"
+                        f"Fix: Choose a start_line between 1 and {total_lines}.\n"
+                        "Tip: Use grep_content to find valid line numbers first."
+                    )
+
+                # Scan subsequent lines for the pattern
+                for line in line_iterator:
+                    if re.search(pattern, line):
+                        pattern_found = True
+                        break
+                    lines_to_read.append(line)
+
+                content = "".join(lines_to_read)
+                if not pattern_found:
+                    note = f"Note: Pattern '{pattern}' not found after line {start_line}. Read to end of file."
+                    content = f"{content.rstrip()}\n{note}\n"
+                return content
+
+            if read_spec.start_line is not None or read_spec.end_line is not None:
+                lines = f.readlines()
+                start = (read_spec.start_line or 1) - 1
+                end = read_spec.end_line or len(lines)
+                return "".join(lines[start:end])
+
+            if read_spec.head is not None:
+                return "".join(itertools.islice(f, read_spec.head))
+
+            if read_spec.tail is not None:
+                return "".join(f.readlines()[-read_spec.tail:])
+
+            return f.read()
+
     results = []
     for file_request_data in files:
         if isinstance(file_request_data, dict):
             file_request = FileReadRequest(**file_request_data)
         else:
             file_request = file_request_data
-            
+
         try:
             path_obj = validate_path(file_request.path)
-
-            # --- Parameter Validation ---
-            if file_request.end_line and file_request.read_to_next_pattern:
-                error_message = (
-                    "Error: Mutually exclusive parameters provided.\n\n"
-                    f"You provided: end_line={file_request.end_line}, read_to_next_pattern='{file_request.read_to_next_pattern}'\n"
-                    "Problem: `end_line` and `read_to_next_pattern` cannot be used together.\n"
-                    "Fix: Choose one method for defining the read boundary."
-                )
-                results.append(f"File: {file_request.path}\n{error_message}")
-                continue
-
-            if file_request.read_to_next_pattern and not file_request.start_line:
-                error_message = (
-                    "Error: Missing required parameter.\n\n"
-                    f"You provided: read_to_next_pattern='{file_request.read_to_next_pattern}' without `start_line`.\n"
-                    "Problem: `read_to_next_pattern` requires a `start_line` to know where to begin scanning.\n"
-                    "Fix: Provide a `start_line`."
-                )
-                results.append(f"File: {file_request.path}\n{error_message}")
+            read_specs, normalization_error = _normalize_read_specs(file_request)
+            if normalization_error:
+                results.append(f"File: {file_request.path}\n{normalization_error}")
                 continue
 
             # Large file check for JSON/YAML - conservative threshold to enforce grep->read workflow
@@ -393,94 +557,45 @@ def read_files(
                     if tokens > LARGE_FILE_TOKEN_THRESHOLD:
                         query_tool = "n/a ignore this line"
                         file_type = "n/a ignore this line"
-                        if file_ext in ['.json','.yaml', '.yml']:
+                        if file_ext in ['.json', '.yaml', '.yml']:
                             file_type = "JSON" if file_ext == '.json' else "YAML"
                             query_tool = "query_json" if file_type == "JSON" else "query_yaml"
                         error_message = (
                             f"Error: {file_request.path} is a large {file_type} file (~{tokens:,.0f} tokens).\n\n"
-                            f"Reading the entire file may overflow your context window. Consider using these if the file is json / yaml:\n"
+                            "Reading the entire file may overflow your context window. Consider using these if the file is json / yaml:\n"
                             f"- {query_tool}(\"{file_request.path}\", \"keys\") to explore structure\n"
                             f"- {query_tool}(\"{file_request.path}\", \".items[0:10]\") to preview data\n"
                             f"- {query_tool}(\"{file_request.path}\", \".items[] | select(.field == 'value')\") to filter\n\n"
-                            f"- Or use grep_content to explore the file structure"
-                            f"- As a last resort, set large_file_passthrough=True to read anyway."
+                            "- Or use grep_content to explore the file structure"
+                            "- As a last resort, set large_file_passthrough=True to read anyway."
                         )
                         results.append(f"File: {file_request.path}\n{error_message}")
                         continue
 
-            if (file_request.head is not None or file_request.tail is not None) and \
-               (file_request.start_line is not None or file_request.end_line is not None):
-                raise ValueError("Cannot mix start_line/end_line with head/tail.")
+            for index, read_spec in enumerate(read_specs, start=1):
+                header = f"File: {file_request.path}"
+                if file_request.reads is not None:
+                    header += f" [read {index}/{len(read_specs)}: {_describe_read_spec(read_spec)}]"
 
-            if path_obj.is_dir():
-                content = "Error: Is a directory"
-            else:
-                try:
-                    with open(path_obj, 'r', encoding='utf-8') as f:
-                        if file_request.read_to_next_pattern:
-                            start_line = file_request.start_line
-                            if start_line is None:
-                                # This case should ideally be caught by earlier validation, but for safety:
-                                results.append(f"File: {file_request.path}\nError: start_line is required for read_to_next_pattern.")
-                                continue
-                            pattern = file_request.read_to_next_pattern
-                            
-                            lines_to_read = []
-                            pattern_found = False
-                            
-                            # islice uses 0-based indexing, so subtract 1
-                            line_iterator = itertools.islice(f, start_line - 1, None)
-                            
-                            try:
-                                first_line = next(line_iterator)
-                                lines_to_read.append(first_line)
-                            except StopIteration:
-                                # To get total lines, we need to read the file again unfortunately
-                                with open(path_obj, 'r', encoding='utf-8') as count_f:
-                                    total_lines = sum(1 for _ in count_f)
+                validation_error = _validate_read_spec(read_spec)
+                if validation_error:
+                    results.append(f"{header}\n{validation_error}")
+                    continue
 
-                                error_message = (
-                                    f"Error: Invalid start_line.\n\n"
-                                    f"You provided: start_line={start_line}\n"
-                                    f"Problem: The file '{file_request.path}' only has {total_lines} lines.\n"
-                                    f"Fix: Choose a start_line between 1 and {total_lines}.\n"
-                                    f"Tip: Use grep_content to find valid line numbers first."
-                                )
-                                results.append(f"File: {file_request.path}\n{error_message}")
-                                continue
+                if path_obj.is_dir():
+                    content = "Error: Is a directory"
+                else:
+                    try:
+                        content = _read_content_for_spec(path_obj, file_request.path, read_spec)
+                    except UnicodeDecodeError:
+                        content = "Error: Binary file. Use read_media_file."
 
-                            # Scan subsequent lines for the pattern
-                            for line in line_iterator:
-                                if re.search(pattern, line):
-                                    pattern_found = True
-                                    break
-                                lines_to_read.append(line)
-                            
-                            content = "".join(lines_to_read)
-                            if not pattern_found:
-                                note = f"Note: Pattern '{pattern}' not found after line {start_line}. Read to end of file."
-                                content = f"{content.rstrip()}\n{note}\n"
+                results.append(f"{header}\n{content}")
 
-                        elif file_request.start_line is not None or file_request.end_line is not None:
-                            lines = f.readlines()
-                            start = (file_request.start_line or 1) - 1
-                            end = file_request.end_line or len(lines)
-                            content = "".join(lines[start:end])
-                        elif file_request.head is not None:
-                            content = "".join([next(f) for _ in range(file_request.head)])
-                        elif file_request.tail is not None:
-                            content = "".join(f.readlines()[-file_request.tail:])
-                        else:
-                            content = f.read()
-                except UnicodeDecodeError:
-                    content = "Error: Binary file. Use read_media_file."
-            
-            results.append(f"File: {file_request.path}\n{content}")
         except Exception as e:
             results.append(f"File: {file_request.path}\nError: {e}")
-            
-    return "\n\n---\n\n".join(results)
 
+    return "\n\n---\n\n".join(results)
 @mcp.tool()
 def read_media_file(path: str) -> dict:
     """Read an image or audio file as base64. Prefer relative paths."""

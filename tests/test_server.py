@@ -91,10 +91,10 @@ def test_read_multiple_files(temp_env):
     """Test reading multiple files"""
     f1 = temp_env / "f1.txt"
     f2 = temp_env / "f2.txt"
-    
+
     server.write_file.fn(str(f1), "Content 1")
     server.write_file.fn(str(f2), "Content 2")
-    
+
     # Test valid + invalid path mixed
     requests = [
         {"path": str(f1)},
@@ -102,12 +102,55 @@ def test_read_multiple_files(temp_env):
         {"path": str(temp_env / "missing.txt")}
     ]
     result = server.read_files.fn(requests)
-    
+
     assert "Content 1" in result
     assert "Content 2" in result
     assert "missing.txt" in result
     assert "Error" in result # For the missing file
     assert "---" in result
+
+
+
+def test_read_files_multiple_modes_per_file(temp_env):
+    """A single file request can contain multiple read mode specs via `reads`."""
+    target = temp_env / "multi_modes.txt"
+    content = "\n".join(f"line {i}" for i in range(1, 201)) + "\n"
+    server.write_file.fn(str(target), content)
+
+    result = server.read_files.fn([
+        {
+            "path": str(target),
+            "reads": [
+                {"head": 3},
+                {"start_line": 100, "end_line": 102},
+            ],
+        }
+    ])
+
+    assert f"File: {target} [read 1/2: head=3]" in result
+    assert f"File: {target} [read 2/2: range=100:102]" in result
+    assert "line 1" in result
+    assert "line 3" in result
+    assert "line 100" in result
+    assert "line 102" in result
+
+
+
+def test_read_files_rejects_mixed_reads_and_legacy_fields(temp_env):
+    """`reads` cannot be combined with top-level legacy read fields."""
+    target = temp_env / "mixed_modes.txt"
+    server.write_file.fn(str(target), "hello\nworld\n")
+
+    result = server.read_files.fn([
+        {
+            "path": str(target),
+            "head": 1,
+            "reads": [{"tail": 1}],
+        }
+    ])
+
+    assert "Error: Invalid request shape." in result
+    assert "reads` cannot be combined with top-level" in result
 
 def test_list_directory(temp_env):
     """Test directory listing"""

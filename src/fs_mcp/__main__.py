@@ -33,7 +33,7 @@ def main():
     )
     # UI flags - now inverted to disable the default
     ui_group = parser.add_argument_group('UI Options')
-    ui_group.add_argument("--no-ui", action="store_false", dest="run_ui", help="Do not launch the Streamlit Web UI.")
+    ui_group.add_argument("--ui", action="store_true", dest="run_ui", help="Do not launch the Streamlit Web UI.")
     ui_group.add_argument("--host", default="0.0.0.0", help="Host for the Streamlit UI.")
     ui_group.add_argument("--port", default="8123", type=int, help="Port for the Streamlit UI.")
     

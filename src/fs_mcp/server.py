@@ -1287,41 +1287,34 @@ def query_json(
 def query_yaml(
     file_path: Annotated[
         str,
-        Field(description="Path to the YAML file to query. Supports relative or absolute paths.")
+        Field(description="Path to the file to query. Supports relative or absolute paths.")
     ],
     yq_expression: Annotated[
         str,
         Field(description="The yq query expression (jq-like syntax). Examples: '.field_name' (get field), '.items[]' (iterate array), '.items[] | select(.active == true)' (filter), '.items | length' (count). See mikefarah.gitbook.io/yq")
     ],
+    input_format: Annotated[
+        Literal["yaml", "json", "xml", "csv", "tsv", "toml", "props", "ini", "hcl"],
+        Field(default="yaml", description="Input file format. Use 'xml' for .twb/.pom/.rss, 'toml' for pyproject.toml/Cargo.toml, 'props' for .properties, 'csv'/'tsv' for tabular data, 'ini' for .ini/.cfg, 'hcl' for Terraform .tf files.")
+    ] = "yaml",
     timeout: Annotated[
         int,
         Field(default=30, description="Query timeout in seconds. Default is 30. Increase for complex queries on large files.")
     ] = 30
 ) -> str:
     """
-    Query a YAML file using yq expressions (mikefarah/yq with jq-like syntax). Use this to efficiently explore large YAML files without reading the entire content into memory.
+    Query structured data files using yq (mikefarah/yq). Supports YAML, JSON, XML, CSV, TSV, TOML, Properties, INI, and HCL formats.
+
+    **Multi-Format Examples:**
+    - XML (Tableau .twb): `query_yaml("file.twb", ". | keys", input_format="xml")`
+    - TOML: `query_yaml("pyproject.toml", ".project.name", input_format="toml")`
+    - CSV: `query_yaml("data.csv", ".[0]", input_format="csv")` (first row as object)
 
     **Common Query Patterns:**
-    - Get specific field: '.field_name'
-    - Array iteration: '.items[]'
-    - Filter array: '.items[] | select(.active == true)'
-    - Select fields: '.items[] | {name, id}'
-    - Array slice: '.items[0:100]' (first 100 items)
-    - Count items: '.items | length'
+    - Get field: '.field_name' | Iterate: '.items[]' | Filter: '.items[] | select(.active)'
+    - Count: '.items | length' | Slice: '.items[0:100]'
 
-    **Multiline Queries (with comments):**
-    query_yaml("config.yaml", '''
-    # Filter active services
-    .services[] | select(.active == true)
-    ''')
-
-    **Workflow Example:**
-    1. Get structure overview: query_yaml("config.yaml", "keys")
-    2. Count array items: query_yaml("config.yaml", ".services | length")
-    3. Explore first few: query_yaml("config.yaml", ".services[0:5]")
-    4. Filter specific: query_yaml("config.yaml", ".services[] | select(.enabled == true)")
-
-    **Result Limit:** Returns first 100 results. For more, use slicing: .items[100:200]
+    **Result Limit:** First 100 results. Use slicing for more: `.items[100:200]`
     """
     if not IS_YQ_AVAILABLE:
         _, msg = check_yq()
@@ -1336,7 +1329,10 @@ def query_yaml(
         temp_file.write(yq_expression)
         temp_file.close()
 
-        command = ['yq', '-o', 'json', '-I', '0', '--from-file', temp_file.name, str(validated_path)]
+        command = ['yq', '-o', 'json', '-I', '0']
+        if input_format != "yaml":
+            command.extend(['-p', input_format])
+        command.extend(['--from-file', temp_file.name, str(validated_path)])
 
         try:
             result = subprocess.run(

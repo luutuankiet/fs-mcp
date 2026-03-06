@@ -17,7 +17,7 @@ import shutil
 import subprocess
 
 from .edit_tool import EditResult, RooStyleEditTool, propose_and_review_logic, MATCH_TEXT_MAX_LENGTH
-from .utils import check_ripgrep, check_jq, check_yq
+from .utils import check_ripgrep, check_jq, check_yq, check_required_dependencies
 from .gsd_lite_analyzer import analyze_gsd_logs
 from .gemini_compat import make_gemini_compatible
 
@@ -152,18 +152,13 @@ def initialize(directories: List[str], use_all_tools: bool = False):
     ALLOWED_DIRS.clear()
     USER_ACCESSIBLE_DIRS.clear()
     
-    IS_VSCODE_CLI_AVAILABLE = shutil.which('code') is not None
-    IS_RIPGREP_AVAILABLE, ripgrep_message = check_ripgrep()
-    if not IS_RIPGREP_AVAILABLE:
-        print(ripgrep_message)
-
-    IS_JQ_AVAILABLE, jq_message = check_jq()
-    if not IS_JQ_AVAILABLE:
-        print(jq_message)
+    # Check required dependencies (exits with instructions if missing)
+    check_required_dependencies()
     
-    IS_YQ_AVAILABLE, yq_message = check_yq()
-    if not IS_YQ_AVAILABLE:
-        print(yq_message)
+    IS_VSCODE_CLI_AVAILABLE = shutil.which('code') is not None
+    IS_RIPGREP_AVAILABLE = True  # Guaranteed by check_required_dependencies
+    IS_JQ_AVAILABLE = True       # Guaranteed by check_required_dependencies
+    IS_YQ_AVAILABLE = True       # Guaranteed by check_required_dependencies
 
     raw_dirs = directories or [str(Path.cwd())]
     

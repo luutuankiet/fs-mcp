@@ -196,7 +196,19 @@ scripts/schema_compat/ # CLI for schema validation
 tests/                 # pytest suite (including Gemini compat CI guard)
 ```
 
-**Key dependency:** `ripgrep` (`rg`) must be installed for `grep_content`.
+**Required CLI tools** (fs-mcp exits with install instructions if missing):
+- `ripgrep` (`rg`) — powers `grep_content`
+- `jq` — powers `query_json`  
+- `yq` — powers `query_yaml` (also handles XML, TOML, CSV, TSV, INI, HCL)
+
+```bash
+# macOS
+brew install ripgrep jq yq
+
+# Ubuntu/Debian
+sudo apt-get install ripgrep jq
+# yq: download from https://github.com/mikefarah/yq/releases
+```
 
 ---
 

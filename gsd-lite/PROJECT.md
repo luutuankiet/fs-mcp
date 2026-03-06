@@ -58,7 +58,9 @@ Discovery: Gemini silently corrupts tool schemas containing JSON Schema `$ref` r
 ## Constraints
 
 - **Dependencies:** 
-  - `ripgrep` — external binary for fast grep (required)
+  - `ripgrep` — external binary for fast grep (required, powers `grep_content`)
+  - `jq` — external binary for JSON queries (required, powers `query_json`)
+  - `yq` — external binary for YAML/XML/TOML/CSV/TSV/INI/HCL queries (required, powers `query_yaml`)
   - `jsonref` — Python library for `$ref` dereferencing (required)
   - `google-genai` — Python library for Gemini schema transforms (required)
 - **Token Budget:** Tool outputs must be strictly bounded (e.g., max 100 grep matches, truncated error previews).

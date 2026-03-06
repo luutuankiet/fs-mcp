@@ -26,10 +26,12 @@
 - **Core Framework:** `fastmcp` (MCP protocol), `pydantic` (validation)
 - **Schema Compatibility:** `jsonref` (dereference `$ref`), `google-genai` (Gemini transforms)
 - **Interactive UI:** `streamlit`, `streamlit-js-eval`
-- **Critical Binaries:**
-  - `ripgrep` (`rg`): **Essential.** Powers `grep_content` for fast regex search.
-  - `jq` / `yq`: **Optional.** Powers `query_json` / `query_yaml` for structured data exploration.
-  - `code` (VS Code): **Optional.** Powers diff view in `propose_and_review`.
+- **Required Binaries (startup fails without these):**
+  - `ripgrep` (`rg`): Powers `grep_content` for fast regex search.
+  - `jq`: Powers `query_json` for JSON queries.
+  - `yq`: Powers `query_yaml` for YAML/XML/TOML/CSV/TSV/INI/HCL queries.
+- **Optional Binaries:**
+  - `code` (VS Code): Powers diff view in `propose_and_review`.
 
 ## Data Flow
 

@@ -1,97 +1,150 @@
 import shutil
 import platform
+import sys
 import distro
 
-def check_ripgrep():
-    """
-    Checks if ripgrep is installed and returns platform-specific installation instructions if not.
 
-    Returns:
-        tuple[bool, str]: A tuple containing a boolean indicating if ripgrep is installed,
-                          and a message with installation instructions if it's not.
-    """
+def _get_platform_info() -> tuple[str, str]:
+    """Get OS and distribution info."""
+    system = platform.system()
+    dist = ""
+    if system == 'Linux':
+        dist = distro.id()
+    return system, dist
+
+
+def _format_install_instructions(tool: str, system: str, dist: str) -> str:
+    """Generate platform-specific install instructions for a tool."""
+    
+    instructions = {
+        'ripgrep': {
+            'Darwin': 'brew install ripgrep',
+            'Windows': 'choco install ripgrep',
+            'Linux': {
+                'ubuntu': 'sudo apt-get install ripgrep',
+                'debian': 'sudo apt-get install ripgrep',
+                'fedora': 'sudo dnf install ripgrep',
+                'centos': 'sudo dnf install ripgrep',
+                'rhel': 'sudo dnf install ripgrep',
+                'arch': 'sudo pacman -S ripgrep',
+                'default': 'Install via package manager or: cargo install ripgrep',
+            },
+        },
+        'jq': {
+            'Darwin': 'brew install jq',
+            'Windows': 'choco install jq',
+            'Linux': {
+                'ubuntu': 'sudo apt-get install jq',
+                'debian': 'sudo apt-get install jq',
+                'fedora': 'sudo dnf install jq',
+                'centos': 'sudo dnf install jq',
+                'rhel': 'sudo dnf install jq',
+                'arch': 'sudo pacman -S jq',
+                'default': 'Install via package manager or download from https://jqlang.github.io/jq/download/',
+            },
+        },
+        'yq': {
+            'Darwin': 'brew install yq',
+            'Windows': 'choco install yq',
+            'Linux': {
+                'default': 'brew install yq  # or download from https://github.com/mikefarah/yq/releases',
+            },
+        },
+    }
+    
+    tool_instructions = instructions.get(tool, {})
+    
+    if system == 'Linux':
+        linux_instructions = tool_instructions.get('Linux', {})
+        return linux_instructions.get(dist, linux_instructions.get('default', f'Install {tool} manually'))
+    
+    return tool_instructions.get(system, f'Install {tool} manually')
+
+
+def check_ripgrep() -> tuple[bool, str]:
+    """Check if ripgrep is installed."""
     if shutil.which('rg'):
         return True, "ripgrep is installed."
-
-    system = platform.system()
-    install_cmd = ""
-
-    if system == 'Darwin':
-        install_cmd = "brew install ripgrep"
-    elif system == 'Windows':
-        install_cmd = "choco install ripgrep"
-    elif system == 'Linux':
-        dist = distro.id()
-        if dist in ['ubuntu', 'debian']:
-            install_cmd = "sudo apt-get install ripgrep"
-        elif dist in ['fedora', 'centos', 'rhel']:
-            install_cmd = "sudo dnf install ripgrep"
-        else:
-            install_cmd = "Please install ripgrep using your system's package manager."
-    else:
-        install_cmd = "Could not determine OS. Please install ripgrep manually."
-
-    message = f"Warning: ripgrep is not installed. The 'grep_content' tool will be disabled. Please install it with: {install_cmd}"
-    return False, message
+    
+    system, dist = _get_platform_info()
+    install_cmd = _format_install_instructions('ripgrep', system, dist)
+    return False, install_cmd
 
 
-def check_jq():
-    """
-    Checks if jq is installed and returns platform-specific installation instructions if not.
-
-    Returns:
-        tuple[bool, str]: A tuple containing a boolean indicating if jq is installed,
-                          and a message with installation instructions if it's not.
-    """
+def check_jq() -> tuple[bool, str]:
+    """Check if jq is installed."""
     if shutil.which('jq'):
         return True, "jq is installed."
-
-    system = platform.system()
-    install_cmd = ""
-
-    if system == 'Darwin':
-        install_cmd = "brew install jq"
-    elif system == 'Windows':
-        install_cmd = "choco install jq"
-    elif system == 'Linux':
-        dist = distro.id()
-        if dist in ['ubuntu', 'debian']:
-            install_cmd = "sudo apt-get install jq"
-        elif dist in ['fedora', 'centos', 'rhel']:
-            install_cmd = "sudo dnf install jq"
-        else:
-            install_cmd = "Please install jq using your system's package manager."
-    else:
-        install_cmd = "Could not determine OS. Please install jq manually."
-
-    message = f"Warning: jq is not installed. The 'query_json' tool will be disabled. Please install it with: {install_cmd}"
-    return False, message
+    
+    system, dist = _get_platform_info()
+    install_cmd = _format_install_instructions('jq', system, dist)
+    return False, install_cmd
 
 
-def check_yq():
-    """
-    Checks if yq is installed and returns platform-specific installation instructions if not.
-
-    Returns:
-        tuple[bool, str]: A tuple containing a boolean indicating if yq is installed,
-                          and a message with installation instructions if it's not.
-    """
+def check_yq() -> tuple[bool, str]:
+    """Check if yq is installed."""
     if shutil.which('yq'):
         return True, "yq is installed."
+    
+    system, dist = _get_platform_info()
+    install_cmd = _format_install_instructions('yq', system, dist)
+    return False, install_cmd
 
-    system = platform.system()
-    install_cmd = ""
 
+def check_required_dependencies() -> None:
+    """
+    Check all required dependencies and exit with clear instructions if any are missing.
+    
+    Required: ripgrep (rg), jq, yq
+    """
+    missing = []
+    
+    rg_ok, rg_install = check_ripgrep()
+    if not rg_ok:
+        missing.append(('ripgrep (rg)', 'grep_content', rg_install))
+    
+    jq_ok, jq_install = check_jq()
+    if not jq_ok:
+        missing.append(('jq', 'query_json', jq_install))
+    
+    yq_ok, yq_install = check_yq()
+    if not yq_ok:
+        missing.append(('yq', 'query_yaml (YAML/XML/TOML/CSV/TSV/INI/HCL)', yq_install))
+    
+    if missing:
+        _print_dependency_error(missing)
+        sys.exit(1)
+
+
+def _print_dependency_error(missing: list[tuple[str, str, str]]) -> None:
+    """Print a clear, formatted error message for missing dependencies."""
+    
+    # Box drawing
+    print("\n" + "=" * 70)
+    print("  ❌ MISSING REQUIRED DEPENDENCIES")
+    print("=" * 70)
+    print()
+    print("  fs-mcp requires the following CLI tools to be installed:")
+    print()
+    
+    for tool, powers, install_cmd in missing:
+        print(f"  ┌─ {tool}")
+        print(f"  │  Powers: {powers}")
+        print(f"  │  Install: {install_cmd}")
+        print(f"  └" + "─" * 50)
+        print()
+    
+    # One-liner for common case
+    system, dist = _get_platform_info()
     if system == 'Darwin':
-        install_cmd = "brew install yq"
-    elif system == 'Windows':
-        install_cmd = "choco install yq"
+        tools = ' '.join(t[0].split()[0].lower() for t in missing)
+        print(f"  💡 Quick fix (macOS): brew install {tools}")
     elif system == 'Linux':
-        install_cmd = "Download from https://github.com/mikefarah/yq/releases or use 'brew install yq' if brew is available"
-    else:
-        install_cmd = "Could not determine OS. Please install yq manually."
-
-    message = f"Warning: yq is not installed. The 'query_yaml' tool will be disabled. Please install it with: {install_cmd}"
-    return False, message
-
-
+        if dist in ['ubuntu', 'debian']:
+            # ripgrep binary is 'rg' but package is 'ripgrep'
+            tools = ' '.join('ripgrep' if 'ripgrep' in t[0] else t[0].split()[0].lower() for t in missing)
+            print(f"  💡 Quick fix (apt): sudo apt-get install {tools}")
+    
+    print()
+    print("=" * 70)
+    print()

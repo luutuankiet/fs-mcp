@@ -17,7 +17,7 @@ import shutil
 import subprocess
 
 from .edit_tool import EditResult, RooStyleEditTool, propose_and_review_logic, MATCH_TEXT_MAX_LENGTH
-from .utils import check_ripgrep, check_jq, check_yq, check_required_dependencies
+from .utils import check_ripgrep, check_jq, check_yq, check_rtk, check_required_dependencies
 from .gsd_lite_analyzer import analyze_gsd_logs
 from .gemini_compat import make_gemini_compatible
 
@@ -105,6 +105,83 @@ IS_VSCODE_CLI_AVAILABLE = False
 IS_RIPGREP_AVAILABLE = False
 IS_JQ_AVAILABLE = False
 IS_YQ_AVAILABLE = False
+IS_RTK_AVAILABLE = False
+
+# --- RTK (Rust Token Killer) Integration ---
+RTK_TIMEOUT_SECONDS = 30
+
+def _rtk_compress_content(content: str, file_path: str = "-") -> tuple[str, Optional[str]]:
+    """
+    Pipe content through RTK for token-efficient compression.
+    
+    Args:
+        content: The file content to compress
+        file_path: Original file path (used for language detection hint, or "-" for stdin)
+    
+    Returns:
+        Tuple of (compressed_content, warning_or_none)
+        If RTK fails, returns original content with a warning.
+    """
+    try:
+        # RTK supports stdin via 'rtk read -'
+        result = subprocess.run(
+            ["rtk", "read", "-"],
+            input=content,
+            capture_output=True,
+            text=True,
+            timeout=RTK_TIMEOUT_SECONDS
+        )
+        
+        if result.returncode == 0:
+            return result.stdout, None
+        else:
+            # RTK failed, return original with warning
+            warning = f"[RTK compression failed (exit {result.returncode}), returning verbatim]"
+            return content, warning
+            
+    except subprocess.TimeoutExpired:
+        warning = f"[RTK timeout after {RTK_TIMEOUT_SECONDS}s, returning verbatim]"
+        return content, warning
+    except FileNotFoundError:
+        warning = "[RTK binary not found, returning verbatim]"
+        return content, warning
+    except Exception as e:
+        warning = f"[RTK error: {e}, returning verbatim]"
+        return content, warning
+
+
+def _rtk_grep(pattern: str, search_path: str) -> tuple[str, Optional[str]]:
+    """
+    Run RTK grep for token-efficient grouped search results.
+    
+    Args:
+        pattern: The regex pattern to search for
+        search_path: The directory or file to search in
+    
+    Returns:
+        Tuple of (rtk_output, warning_or_none)
+        If RTK fails, returns None with an error message.
+    """
+    try:
+        result = subprocess.run(
+            ["rtk", "grep", pattern, search_path],
+            capture_output=True,
+            text=True,
+            timeout=RTK_TIMEOUT_SECONDS
+        )
+        
+        if result.returncode == 0 or result.returncode == 1:  # 1 = no matches (not an error)
+            return result.stdout, None
+        else:
+            return None, f"RTK grep failed (exit {result.returncode}): {result.stderr}"
+            
+    except subprocess.TimeoutExpired:
+        return None, f"RTK grep timeout after {RTK_TIMEOUT_SECONDS}s"
+    except FileNotFoundError:
+        return None, "RTK binary not found"
+    except Exception as e:
+        return None, f"RTK grep error: {e}"
+
 
 # --- Tool Tier Configuration ---
 # Core tier: GSD-Lite optimized toolset (safe edit, grep-first, structured queries)
@@ -159,6 +236,7 @@ def initialize(directories: List[str], use_all_tools: bool = False):
     IS_RIPGREP_AVAILABLE = True  # Guaranteed by check_required_dependencies
     IS_JQ_AVAILABLE = True       # Guaranteed by check_required_dependencies
     IS_YQ_AVAILABLE = True       # Guaranteed by check_required_dependencies
+    IS_RTK_AVAILABLE = True      # Guaranteed by check_required_dependencies
 
     raw_dirs = directories or [str(Path.cwd())]
     
@@ -331,12 +409,27 @@ def read_files(
     large_file_passthrough: Annotated[
         bool,
         Field(default=False, description=LARGE_FILE_PASSTHROUGH_DESCRIPTION)
-    ] = False
+    ] = False,
+    compact: Annotated[
+        bool,
+        Field(default=True, description="Token-efficient mode via RTK compression. DEFAULT=True returns compressed content (comments stripped, whitespace normalized, 60-90%% token savings). Set compact=False for VERBATIM content when preparing propose_and_review edits (exact match_text required).")
+    ] = True
 ) -> str:
     """
     Read the contents of multiple files simultaneously.
     Returns path and content separated by dashes.
     Prefer relative paths.
+
+    **DEFAULT BEHAVIOR (compact=True):**
+    Returns TOKEN-OPTIMIZED content via RTK:
+    - Comments stripped
+    - Whitespace normalized  
+    - Structure preserved, verbosity reduced
+    - 60-90%% token savings
+
+    **FOR EDITING (compact=False):**
+    When preparing `propose_and_review`, set compact=False to get 
+    EXACT VERBATIM content required for match_text.
 
     **Reading Modes:**
     1.  **Full File:** Provide just the `path`.
@@ -582,6 +675,12 @@ def read_files(
                 else:
                     try:
                         content = _read_content_for_spec(path_obj, file_request.path, read_spec)
+                        
+                        # Apply RTK compression if compact=True (default)
+                        if compact and not content.startswith("Error:"):
+                            content, rtk_warning = _rtk_compress_content(content, file_request.path)
+                            if rtk_warning:
+                                header += f" {rtk_warning}"
                     except UnicodeDecodeError:
                         content = "Error: Binary file. Use read_media_file."
 
@@ -1059,14 +1158,32 @@ def grep_content(
     section_patterns: Annotated[
         Optional[List[str]],
         Field(default=None, description="Regex patterns for section boundary detection to generate 'section end hint' metadata. Default: Python patterns ['^def ', '^class ']. Custom: provide your own patterns. Disable: pass empty list []. Use the hint to know exactly which lines to read with read_files.")
-    ] = None
+    ] = None,
+    compact: Annotated[
+        bool,
+        Field(default=True, description="Token-efficient mode via RTK grep. DEFAULT=True returns grouped results (70-80%% token savings). Set compact=False for full ripgrep output with section end hints (needed for precise line targeting).")
+    ] = True
 ) -> str:
     """
     Search for a pattern in file contents using ripgrep.
 
-    **Workflow:**
-    Mandatory File Interaction Protocol: The "Grep -> Hint -> Read" Workflow
+    **DEFAULT BEHAVIOR (compact=True):**
+    Returns TOKEN-OPTIMIZED grouped results via RTK:
+    - Matches grouped by file with counts
+    - Content truncated to relevant context
+    - 70-80%% token savings
+    - NOTE: Section end hints not available in compact mode
 
+    **FOR TARGETED READING (compact=False):**
+    Returns full ripgrep output with section end hints.
+    Use when you need exact line boundaries for read_files targeting.
+
+    **Workflow:**
+    1. compact=True: "Find all usages of calculate_total" → explore
+    2. compact=False: "I found it, now I need exact lines to read" → target
+    3. read_files: surgical read with start_line/end_line
+
+    **Mandatory File Interaction Protocol (compact=False mode):**
     1.  **`grep_content`**: Use this tool with a specific pattern to find *which files* are relevant and *where* in those files the relevant code is (line numbers). Its primary purpose is to **locate file paths and line numbers**, not to read full file contents.
     2.  Hint: Critically inspect the grep output for the (section end hint: ...) metadata. This hint defines the full boundary of the relevant content.
     3.  **`read_files`**: Use the file path and line numbers from the output of this tool to perform a targeted read of only the relevant file sections.
@@ -1096,6 +1213,23 @@ def grep_content(
 
     validated_path = validate_path(search_path)
     
+    # Use RTK grep for compact mode (default)
+    if compact:
+        rtk_output, rtk_error = _rtk_grep(pattern, str(validated_path))
+        if rtk_error:
+            # Fallback to regular ripgrep if RTK fails
+            # Note: Must use .fn since grep_content is decorated with @mcp.tool()
+            return f"[RTK grep failed: {rtk_error}, falling back to ripgrep]\n\n" + grep_content.fn(
+                pattern=pattern,
+                search_path=search_path,
+                case_insensitive=case_insensitive,
+                context_lines=context_lines,
+                section_patterns=section_patterns,
+                compact=False  # Prevent infinite recursion
+            )
+        return rtk_output if rtk_output.strip() else "No matches found."
+    
+    # Non-compact mode: use ripgrep with section hints
     command = [
         'rg',
         '--json',

@@ -50,6 +50,13 @@ def _format_install_instructions(tool: str, system: str, dist: str) -> str:
                 'default': 'brew install yq  # or download from https://github.com/mikefarah/yq/releases',
             },
         },
+        'rtk': {
+            'Darwin': 'brew install rtk',
+            'Windows': 'cargo install --git https://github.com/rtk-ai/rtk',
+            'Linux': {
+                'default': 'brew install rtk  # or: cargo install --git https://github.com/rtk-ai/rtk',
+            },
+        },
     }
     
     tool_instructions = instructions.get(tool, {})
@@ -91,6 +98,16 @@ def check_yq() -> tuple[bool, str]:
     return False, install_cmd
 
 
+def check_rtk() -> tuple[bool, str]:
+    """Check if RTK (Rust Token Killer) is installed."""
+    if shutil.which('rtk'):
+        return True, "rtk is installed."
+    
+    system, dist = _get_platform_info()
+    install_cmd = _format_install_instructions('rtk', system, dist)
+    return False, install_cmd
+
+
 def check_required_dependencies() -> None:
     """
     Check all required dependencies and exit with clear instructions if any are missing.
@@ -110,6 +127,10 @@ def check_required_dependencies() -> None:
     yq_ok, yq_install = check_yq()
     if not yq_ok:
         missing.append(('yq', 'query_yaml (YAML/XML/TOML/CSV/TSV/INI/HCL)', yq_install))
+    
+    rtk_ok, rtk_install = check_rtk()
+    if not rtk_ok:
+        missing.append(('rtk', 'read_files/grep_content (token-efficient mode)', rtk_install))
     
     if missing:
         _print_dependency_error(missing)

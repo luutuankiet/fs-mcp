@@ -30,6 +30,7 @@
   - `ripgrep` (`rg`): Powers `grep_content` for fast regex search.
   - `jq`: Powers `query_json` for JSON queries.
   - `yq`: Powers `query_yaml` for YAML/XML/TOML/CSV/TSV/INI/HCL queries.
+  - `rtk`: Powers token-efficient compression for `read_files` and `grep_content` (60-90% token savings).
 - **Optional Binaries:**
   - `code` (VS Code): Powers diff view in `propose_and_review`.
 
@@ -37,8 +38,8 @@
 
 **1. Discovery & Reading (The "Grep -> Hint -> Read" Pattern)**
 Designed to minimize token usage for agents:
-1. Agent calls `grep_content(pattern)` -> Server runs `rg` -> Returns matches + **Section Hints** (e.g., "function ends at L42").
-2. Agent calls `read_files(start_line, read_to_next_pattern)` -> Server reads specific block -> Returns focused context.
+1. Agent calls `grep_content(pattern)` -> By default (`compact=True`), uses **RTK grep** for grouped results (70-80% token savings). Use `compact=False` for section hints.
+2. Agent calls `read_files(start_line, read_to_next_pattern)` -> By default (`compact=True`), content is piped through **RTK** for compression (60-90% token savings). Use `compact=False` for verbatim content (required for `propose_and_review` edits).
 
 **2. Structured Querying**
 For large data files (>2000 tokens):

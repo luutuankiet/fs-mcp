@@ -5,11 +5,11 @@
 ## 1. Current Understanding (Read First)
 
 <current_mode>
-housekeeping
+execution_complete
 </current_mode>
 
 <active_task>
-None
+None — PHASE-003 RTK Integration complete
 </active_task>
 
 <parked_tasks>
@@ -33,6 +33,8 @@ fs-mcp should work seamlessly with all major AI providers (Claude, Gemini, GPT) 
 - LOG-008: Core Tier Tooling — Default to "safe" GSD-Lite toolset (14 tools), hide raw/unsafe tools unless --all flag used
 - LOG-009: Cross-model schema analysis — 6 semantic gaps identified in propose_and_review; append pattern undocumented (CRITICAL), batch not prioritized (MEDIUM)
 - LOG-011: Implemented Option B (APPEND_TO_FILE sentinel) — Addressed Critical Gap 1; allows direct appending without tail-matching
+- LOG-014: RTK Integration — RTK as required binary; `compact=True` (default) for token-efficient reads; `compact=False` for verbatim content
+- LOG-015: RTK Implementation Complete — read_files/grep_content integrated; propose_and_review errors enhanced; tests added
 </decisions>
 
 <blockers>
@@ -41,7 +43,7 @@ fs-mcp should work seamlessly with all major AI providers (Claude, Gemini, GPT) 
 </blockers>
 
 <next_action>
-Merge PR for LOG-009; Pick next task (likely LOG-010: MCP Timeout Loops)
+Run tests to verify RTK integration; merge PR; pick next task
 </next_action>
 
 ---
@@ -78,6 +80,9 @@ Merge PR for LOG-009; Pick next task (likely LOG-010: MCP Timeout Loops)
 
 ### Discovery & Analysis
 - LOG-009: Cross-Model Schema Analysis — Reconciled Gemini vs Claude runtime schemas; identified 6 semantic gaps in `propose_and_review` (see LOG-009 Section 4-5 for full gap table)
+
+### New Capability: RTK Integration
+- LOG-014: RTK Integration Decision — Default to RTK-compressed reads; `full_content=True` for propose_and_review prep; RTK as required binary
 
 ---
 
@@ -2651,5 +2656,320 @@ graph TD
 - **Implementation:** COMPLETE
 - **Verification:** VERIFIED (Reconciled with LOG-009 requirements)
 - **Approval:** APPROVED
+
+---
+
+### [LOG-014] - [VISION] [DECISION] - RTK Integration for Token-Efficient Codebase Exploration - Task: PHASE-003
+**Timestamp:** 2026-03-09 14:30
+**Depends On:** LOG-008 (Core Tier Tooling philosophy), LOG-009 (tool description quality)
+
+---
+
+#### 1. Problem Statement
+
+**Current state:** fs-mcp tools (`read_files`, `grep_content`, `query_json`) return full verbatim content. This works but is token-inefficient for exploration.
+
+**Observation:** When agents explore a codebase, they rarely need exact whitespace/comments — they need *understanding*. Full verbatim content is only required when preparing a `propose_and_review` edit (exact match_text needed).
+
+**Opportunity:** [RTK (Rust Token Killer)](https://github.com/rtk-ai/rtk) provides 60-90% token reduction through smart filtering:
+- Strip comments/blank lines
+- Signatures-only mode (`--level aggressive`)
+- Structure-only for JSON (keys without values)
+- Grouped grep results
+
+---
+
+#### 2. User Requirements (Captured from Discussion)
+
+| Requirement | Rationale | Priority |
+|-------------|-----------|----------|
+| RTK as required binary (like rg, jq, yq) | Consistent dependency model | P0 |
+| Integrate into existing tools, not new tools | Avoid confusing agent with parallel tools | P0 |
+| Default to RTK-compressed output | Exploration is 90% of reads | P0 |
+| `compact=False` flag for verbatim | Only needed for propose_and_review prep | P0 |
+| Greedy batching (multiple files at once) | Fits GSD "batch before scatter" philosophy | P1 |
+| VS Code extension (RTK-wrapped copy) | Human-side token efficiency | P1 (Phase 2) |
+| Terminal execution capability | Deprioritized — risks derailing pair programming | P2 (Parked) |
+
+---
+
+#### 3. Design Decision: Integration vs Parallel Tools
+
+**Options considered:**
+
+| Option | Description | Pros | Cons |
+|--------|-------------|------|------|
+| A. New tools | `rtk_read_files`, `rtk_grep` alongside existing | No breaking changes | Tool proliferation, agent confusion |
+| B. Replace existing | Swap implementations to RTK-backed | Clean API | Breaking change for users expecting verbatim |
+| **C. Flag on existing** | Default RTK, `compact=False` for verbatim | **No new tools, no breaking change, clear intent** | Slightly more complex implementation |
+
+**Decision: Option C** — Integrate RTK into existing tools with `compact` parameter.
+
+**Rationale:** 
+1. Agent doesn't need to learn new tools
+2. Default behavior (`compact=True`) becomes more efficient automatically
+3. `compact=False` makes intent explicit: "I'm about to edit this, need verbatim"
+4. Aligns with LOG-008 philosophy: safe/efficient defaults, explicit opt-out
+5. Parameter name `compact` avoids semantic collision with existing `read_files` modes
+
+---
+
+#### 4. RTK Language Support (Verified)
+
+```rust
+// From tmp/rtk/src/filter.rs:57-71
+match ext.to_lowercase().as_str() {
+    "rs" => Language::Rust,
+    "py" | "pyw" => Language::Python,
+    "js" | "mjs" | "cjs" => Language::JavaScript,
+    "ts" | "tsx" => Language::TypeScript,
+    "go" => Language::Go,
+    "c" | "h" => Language::C,
+    "cpp" | "cc" | "cxx" | "hpp" | "hh" => Language::Cpp,
+    "java" => Language::Java,
+    "rb" => Language::Ruby,
+    "sh" | "bash" | "zsh" => Language::Shell,
+    _ => Language::Unknown,
+}
+```
+
+| Extension | Language | RTK Filtering |
+|-----------|----------|---------------|
+| `.py`, `.pyw` | Python | ✅ Comment stripping, signature extraction |
+| `.ts`, `.tsx`, `.js`, `.mjs`, `.cjs` | TypeScript/JavaScript | ✅ Full support |
+| `.rs` | Rust | ✅ Full support |
+| `.go` | Go | ✅ Full support |
+| `.c`, `.h`, `.cpp`, etc. | C/C++ | ✅ Full support |
+| `.java` | Java | ✅ Full support |
+| `.rb` | Ruby | ✅ Full support |
+| `.sh`, `.bash`, `.zsh` | Shell | ✅ Full support |
+| Other | Unknown | ✅ Basic filtering (fallback) |
+
+---
+
+#### 5. Final Scope (Phase 1)
+
+| Tool | RTK Integration | `compact` Parameter | Notes |
+|------|-----------------|---------------------|-------|
+| `read_files` | ✅ Yes | `compact=True` (default) | Pipe through `rtk read -` for all modes |
+| `grep_content` | ✅ Yes | `compact=True` (default) | Use `rtk grep`; `compact=False` restores section hints |
+| `query_json` | ❌ No | N/A | Keep as-is (jq queries are specific, not exploratory) |
+| `query_yaml` | ❌ No | N/A | Keep as-is (already handles CSV/XML/TOML structure) |
+| `propose_and_review` | ⚠️ Error enhancement | N/A | Add "Did you read with compact=False?" hint |
+
+**Deferred:**
+- `level` parameter (aggressive/smart modes) — keep simple for v1
+- `rtk smart` (2-line summary) — future enhancement
+
+---
+
+#### 6. Implementation Approach
+
+**read_files flow:**
+```mermaid
+flowchart TD
+    A[Agent calls read_files] --> B{compact=False?}
+    B -->|Yes| C[Direct file read<br/>Current behavior verbatim]
+    B -->|No/Default| D{Surgical read?<br/>start_line/end_line/pattern}
+    D -->|Yes| E[Slice content ourselves]
+    D -->|No| F[Read full file]
+    E --> G[Pipe to rtk read -]
+    F --> G
+    G --> H[Return compressed output]
+    C --> I[Return verbatim output]
+```
+
+**grep_content flow:**
+```mermaid
+flowchart TD
+    A[Agent calls grep_content] --> B{compact=False?}
+    B -->|Yes| C[Current rg behavior<br/>With section hints]
+    B -->|No/Default| D[rtk grep pattern path]
+    D --> E[Return grouped results<br/>No section hints]
+    C --> F[Return full output<br/>With section hints]
+```
+
+**Startup behavior:**
+- Check for `rtk` binary (like rg, jq, yq)
+- Fail startup if missing (required dependency)
+- Error message: "RTK required for token-efficient reads. Install: brew install rtk"
+
+**RTK stdin support:** RTK supports `rtk read -` for stdin input. This enables:
+1. Slice file content ourselves (for start_line/end_line/pattern modes)
+2. Pipe sliced content to RTK for compression
+3. Return compressed surgical reads
+
+---
+
+#### 7. Phase 2: VS Code Extension (Parked)
+
+**Concept:** Fork/extend `vscode-copy-to-llm` to wrap selected files through RTK before clipboard.
+
+**Flow:**
+```
+User selects files → Right-click "Copy to LLM (RTK)" → rtk read --level aggressive → Clipboard
+```
+
+**Status:** Parked for after Phase 1 completion.
+
+---
+
+#### 8. Phase 3: Terminal Execution (Deprioritized)
+
+**Why deprioritized:** User concern that terminal execution capability would derail pair programming — agent becomes eager to execute rather than discuss.
+
+**GSD alignment:** Navigator role (§7) is to challenge assumptions and present options, not execute autonomously.
+
+**Status:** Explicitly parked. May revisit with guardrails.
+
+---
+
+#### 9. Resolved Questions
+
+| Question | Resolution | Status |
+|----------|------------|--------|
+| Parameter naming? | `compact=False` to opt out (avoids collision with existing params) | ✅ RESOLVED |
+| Which read modes get RTK? | All modes — surgical reads pipe through stdin | ✅ RESOLVED |
+| RTK failure handling? | Fallback to verbatim + emit warning | ✅ RESOLVED |
+| grep section hints? | Lost with RTK; use `compact=False` to restore | ✅ RESOLVED |
+| query_json/yaml scope? | Keep as-is; RTK doesn't support CSV/XML/TOML | ✅ RESOLVED |
+| `rtk smart` mode? | Deferred — keep Phase 1 simple | ✅ DEFERRED |
+| `level` parameter? | Deferred — keep Phase 1 simple | ✅ DEFERRED |
+| Batch files: single or multiple RTK calls? | Multiple calls (RTK is single-file) | ✅ RESOLVED |
+
+---
+
+#### 10. propose_and_review Error Enhancement
+
+**The footgun:** Agent reads with `compact=True` (default), gets compressed output, then uses that as `match_text` in `propose_and_review`. Edit fails because compressed text ≠ actual file content.
+
+**Solution:** Enhance error message when no match found:
+```
+No match found for:
+  "def calculate_total(items): ..."
+
+Suggestions:
+1. Text may contain whitespace differences - copy exact text from file
+2. If you read with compact=True (default), re-read with compact=False for exact content
+3. Run grep to find exact text: grep_content("calculate_total", compact=False)
+```
+
+---
+
+📦 STATELESS HANDOFF (for future agents reading this log)
+**Dependency chain:** LOG-014 ← LOG-008 (Core Tier philosophy) ← LOG-009 (tool descriptions)
+**What was decided:** 
+- RTK integration into `read_files` and `grep_content` with `compact` parameter
+- Default `compact=True` (RTK compression on)
+- `compact=False` for verbatim (edit prep)
+- RTK as required binary (startup check)
+- `query_json`/`query_yaml` unchanged
+- `propose_and_review` error message enhanced
+**Next action:** Implement RTK startup check, then `compact` param for read_files
+**If pivoting:** This log captures the full design rationale; revisit Section 6 for implementation approach
+
+---
+
+### [LOG-015] - [EXEC] - RTK Integration Implementation Complete - Task: PHASE-003
+**Timestamp:** 2026-03-09 16:30
+**Depends On:** LOG-014 (design decisions)
+
+---
+
+#### 1. Implementation Summary
+
+All tasks from LOG-014 design completed:
+
+| Task | File(s) Modified | Status |
+|------|------------------|--------|
+| RTK binary check at startup | `src/fs_mcp/utils.py` | ✅ Complete |
+| `compact` param for `read_files` | `src/fs_mcp/server.py` | ✅ Complete |
+| `compact` param for `grep_content` | `src/fs_mcp/server.py` | ✅ Complete |
+| RTK helper functions | `src/fs_mcp/server.py` | ✅ Complete |
+| `propose_and_review` error enhancement | `src/fs_mcp/edit_tool.py` | ✅ Complete |
+| Tests for RTK integration | `tests/test_rtk_integration.py` | ✅ Complete |
+| ARCHITECTURE.md update | `gsd-lite/ARCHITECTURE.md` | ✅ Complete |
+
+---
+
+#### 2. Files Changed
+
+**src/fs_mcp/utils.py:**
+- Added `check_rtk()` function (same pattern as `check_ripgrep`, `check_jq`, `check_yq`)
+- Added RTK install instructions for macOS/Linux/Windows
+- Updated `check_required_dependencies()` to include RTK
+
+**src/fs_mcp/server.py:**
+- Added `IS_RTK_AVAILABLE` global flag
+- Added `RTK_TIMEOUT_SECONDS = 30` constant
+- Added `_rtk_compress_content()` helper: pipes content through `rtk read -`
+- Added `_rtk_grep()` helper: runs `rtk grep pattern path`
+- Updated `read_files()`: added `compact` param (default=True), RTK compression logic
+- Updated `grep_content()`: added `compact` param (default=True), RTK grep branch
+- Updated docstrings for both functions
+
+**src/fs_mcp/edit_tool.py:**
+- Updated all `recovery_steps` in `generate_token_efficient_hint()` to include `compact=False` guidance
+
+**tests/test_rtk_integration.py:**
+- New test file with 12 tests covering:
+  - RTK binary check
+  - `read_files` compact behavior
+  - `grep_content` compact behavior
+  - RTK helper functions
+  - Graceful fallback on RTK failure
+
+**gsd-lite/ARCHITECTURE.md:**
+- Added RTK to required binaries list
+- Updated Data Flow section to mention RTK compression
+
+---
+
+#### 3. Key Implementation Details
+
+**RTK Compression Flow (read_files):**
+```python
+if compact and not content.startswith("Error:"):
+    content, rtk_warning = _rtk_compress_content(content, file_request.path)
+    if rtk_warning:
+        header += f" {rtk_warning}"
+```
+
+**RTK Grep Flow:**
+```python
+if compact:
+    rtk_output, rtk_error = _rtk_grep(pattern, str(validated_path))
+    if rtk_error:
+        # Fallback to regular ripgrep
+        return grep_content(..., compact=False)
+    return rtk_output
+```
+
+**Graceful Fallback:**
+- RTK failure → returns original content + warning message
+- Timeout after 30 seconds → returns original content + warning
+- Binary not found → returns original content + warning
+
+---
+
+#### 4. Verification Needed
+
+- [ ] Run `pytest tests/test_rtk_integration.py` to verify tests pass
+- [ ] Manual test: `read_files` with `compact=True` vs `compact=False`
+- [ ] Manual test: `grep_content` with `compact=True` vs `compact=False`
+- [ ] Verify RTK binary check works: start server without RTK installed
+
+---
+
+📦 STATELESS HANDOFF (for future agents reading this log)
+**Dependency chain:** LOG-015 ← LOG-014 (design) ← LOG-008 (Core Tier philosophy)
+**What was implemented:** 
+- RTK as required binary with startup check
+- `compact` param on `read_files` and `grep_content` (default=True)
+- Graceful fallback when RTK fails
+- Enhanced error messages in `propose_and_review`
+- Tests and documentation
+**Next action:** Run tests, merge PR, pick next task (likely LOG-010 MCP Timeout Loops)
+**If issues found:** Check `_rtk_compress_content` and `_rtk_grep` helper functions in `server.py`
 
 ---

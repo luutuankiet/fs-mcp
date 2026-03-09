@@ -200,20 +200,22 @@ def generate_token_efficient_hint(
                 f"Likely a whitespace or minor difference.{error_context}"
             )
             result['recovery_steps'] = [
-                f"1. Call read_files with path='{file_path}', start_line={best_match['line_start']}, end_line={best_match['line_end']}",
-                "2. Compare output character-by-character with your match_text (check tabs vs spaces, trailing whitespace)",
-                "3. Copy the EXACT text from read_files output as your new match_text",
-                "4. Retry propose_and_review with corrected match_text"
+                f"1. Call read_files with path='{file_path}', start_line={best_match['line_start']}, end_line={best_match['line_end']}, compact=False",
+                "2. IMPORTANT: Use compact=False to get EXACT verbatim content (default compact=True strips comments/whitespace)",
+                "3. Compare output character-by-character with your match_text (check tabs vs spaces, trailing whitespace)",
+                "4. Copy the EXACT text from read_files output as your new match_text",
+                "5. Retry propose_and_review with corrected match_text"
             ]
         else:
             result['hint'] = (
                 f"Found {len(suggestions)} similar block(s). Best: {best_match['similarity']}% at lines {best_match['line_start']}-{best_match['line_end']}.{error_context}"
             )
             result['recovery_steps'] = [
-                f"1. Call read_files with path='{file_path}', start_line={best_match['line_start']}, end_line={best_match['line_end']}",
-                "2. Verify this is the correct code section you intended to edit",
-                "3. Copy the EXACT text from read_files output as your new match_text",
-                "4. Retry propose_and_review with corrected match_text"
+                f"1. Call read_files with path='{file_path}', start_line={best_match['line_start']}, end_line={best_match['line_end']}, compact=False",
+                "2. IMPORTANT: Use compact=False to get EXACT verbatim content (default compact=True strips comments/whitespace)",
+                "3. Verify this is the correct code section you intended to edit",
+                "4. Copy the EXACT text from read_files output as your new match_text",
+                "5. Retry propose_and_review with corrected match_text"
             ]
     else:
         # Strategy 2: Provide file outline when no fuzzy matches found
@@ -229,9 +231,9 @@ def generate_token_efficient_hint(
                     f"Try grep_content with keywords: {', '.join(repr(k) for k in grep_keywords)}.{error_context}"
                 )
                 result['recovery_steps'] = [
-                    f"1. Call grep_content with pattern='{grep_keywords[0]}' to locate the code",
+                    f"1. Call grep_content with pattern='{grep_keywords[0]}', compact=False to locate the code with section hints",
                     "2. Note the line numbers from grep results",
-                    f"3. Call read_files with path='{file_path}' and the line range from grep",
+                    f"3. Call read_files with path='{file_path}', line range from grep, and compact=False for verbatim content",
                     "4. Copy the EXACT text and retry propose_and_review"
                 ]
             else:
@@ -241,8 +243,8 @@ def generate_token_efficient_hint(
                 )
                 result['recovery_steps'] = [
                     "1. Review the 'outline' to identify which function/class contains your target",
-                    "2. Call grep_content with a distinctive keyword from your match_text",
-                    f"3. Call read_files with path='{file_path}' and the line range",
+                    "2. Call grep_content with a distinctive keyword from your match_text (use compact=False for section hints)",
+                    f"3. Call read_files with path='{file_path}', line range, and compact=False for verbatim content",
                     "4. Copy the EXACT text and retry propose_and_review"
                 ]
         else:
@@ -253,8 +255,8 @@ def generate_token_efficient_hint(
                 result['suggested_grep_keywords'] = grep_keywords
             result['recovery_steps'] = [
                 "1. Verify you're editing the correct file path",
-                f"2. Call grep_content to search for keywords from your match_text",
-                "3. Call read_files to get the current content",
+                f"2. Call grep_content to search for keywords from your match_text (use compact=False for section hints)",
+                "3. Call read_files with compact=False to get the EXACT verbatim content",
                 "4. Update match_text to reflect current file state"
             ]
 

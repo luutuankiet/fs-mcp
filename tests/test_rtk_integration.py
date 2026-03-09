@@ -245,3 +245,91 @@ class TestRTKHelperFunctions:
             
             # Exit code 1 = no matches, not an error
             assert error is None
+
+class TestRTKTreeHelperFunctions:
+    """Tests for RTK tree helper function."""
+
+    def test_rtk_tree_success(self):
+        """Test _rtk_tree with successful RTK call."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="project/\n\\-- src/\n"
+            )
+
+            output, error = server._rtk_tree("/tmp/project", 3, [".git", "node_modules"])
+
+            assert error is None
+            assert "project/" in output
+
+            cmd = mock_run.call_args[0][0]
+            assert cmd[0:2] == ["rtk", "tree"]
+            assert "-L" in cmd
+            assert "3" in cmd
+            assert "-I" in cmd
+            assert ".git|node_modules" in cmd
+
+    def test_rtk_tree_failure(self):
+        """Test _rtk_tree when RTK tree returns an error."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=2,
+                stderr="tree command not found"
+            )
+
+            output, error = server._rtk_tree("/tmp/project", 3, [".git"])
+
+            assert output is None
+            assert error is not None
+            assert "failed" in error.lower()
+
+
+class TestDirectoryTreeCompact:
+    """Tests for directory_tree compact output modes."""
+
+    def test_directory_tree_compact_true_calls_rtk_tree(self, temp_env):
+        """compact=True should call RTK tree and return compact text output."""
+        project_dir = temp_env / "project"
+        project_dir.mkdir()
+
+        with patch.object(server, "_rtk_tree") as mock_tree:
+            mock_tree.return_value = ("project/\n\\-- src/\n", None)
+
+            result = server.directory_tree.fn(path=str(project_dir), compact=True)
+
+            mock_tree.assert_called_once()
+            assert result == "project/\n\\-- src/\n"
+
+    def test_directory_tree_compact_false_returns_json(self, temp_env):
+        """compact=False should preserve the original JSON tree output."""
+        project_dir = temp_env / "project"
+        project_dir.mkdir()
+        (project_dir / "src").mkdir()
+        (project_dir / "src" / "main.py").write_text("print('hi')\n")
+
+        with patch.object(server, "_rtk_tree") as mock_tree:
+            result = server.directory_tree.fn(path=str(project_dir), compact=False)
+
+            mock_tree.assert_not_called()
+            assert result.strip().startswith("{")
+            assert '"name": "project"' in result
+            assert '"type": "directory"' in result
+            assert '"children"' in result
+
+    def test_directory_tree_compact_rtk_failure_fallback(self, temp_env):
+        """compact=True falls back to built-in compact tree if RTK fails."""
+        project_dir = temp_env / "project"
+        project_dir.mkdir()
+        (project_dir / "src").mkdir()
+        (project_dir / "src" / "main.py").write_text("print('hi')\n")
+
+        with patch.object(server, "_rtk_tree") as mock_tree:
+            mock_tree.return_value = (None, "RTK tree failed")
+
+            result = server.directory_tree.fn(path=str(project_dir), compact=True)
+
+            mock_tree.assert_called_once()
+            assert "using built-in compact tree" in result
+            assert "project/" in result
+            assert "src/" in result
+            assert "main.py" in result

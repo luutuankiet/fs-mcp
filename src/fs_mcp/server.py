@@ -183,6 +183,45 @@ def _rtk_grep(pattern: str, search_path: str) -> tuple[str, Optional[str]]:
         return None, f"RTK grep error: {e}"
 
 
+def _rtk_tree(path: str, max_depth: int, exclude_dirs: Optional[List[str]] = None) -> tuple[Optional[str], Optional[str]]:
+    """Run RTK tree for compact filesystem exploration."""
+    try:
+        command = ["rtk", "tree"]
+
+        if max_depth is not None:
+            command.extend(["-L", str(max_depth)])
+
+        if exclude_dirs:
+            command.extend(["-I", "|".join(exclude_dirs)])
+
+        command.append(path)
+
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=RTK_TIMEOUT_SECONDS,
+        )
+
+        if result.returncode == 0:
+            output = result.stdout
+            if not output.endswith("\n"):
+                output += "\n"
+            return output, None
+
+        stderr = result.stderr.strip()
+        if stderr:
+            return None, f"RTK tree failed (exit {result.returncode}): {stderr}"
+        return None, f"RTK tree failed (exit {result.returncode})"
+
+    except subprocess.TimeoutExpired:
+        return None, f"RTK tree timeout after {RTK_TIMEOUT_SECONDS}s"
+    except FileNotFoundError:
+        return None, "RTK binary not found"
+    except Exception as e:
+        return None, f"RTK tree error: {e}"
+
+
 # --- Tool Tier Configuration ---
 # Core tier: GSD-Lite optimized toolset (safe edit, grep-first, structured queries)
 # These are the tools exposed by default. Pass --all to expose everything.
@@ -967,36 +1006,88 @@ def get_file_info(path: str) -> str:
 
 
 
-@mcp.tool()
-def directory_tree(path: str, max_depth: int = 4, exclude_dirs: Optional[List[str]] = None) -> str:
-    """Get recursive JSON tree with depth limit and default excludes."""
-    root = validate_path(path)
-    
-    # Use provided excludes or our new smart defaults
-    default_excludes = ['.git', '.venv', '__pycache__', 'node_modules', '.pytest_cache']
-    excluded = exclude_dirs if exclude_dirs is not None else default_excludes
-    max_depth = 3 if isinstance(max_depth,str) else max_depth
+def _build_directory_tree_node(current: Path, depth: int, max_depth: int, excluded: List[str]) -> Optional[Dict[str, object]]:
+    if depth > max_depth or current.name in excluded:
+        return None
 
-    def build(current: Path, depth: int) -> Optional[Dict]:
-        if depth > max_depth or current.name in excluded:
-            return None
-        
-        node: Dict[str, object] = {"name": current.name, "type": "directory" if current.is_dir() else "file"}
-        
-        if current.is_dir():
-            children: List[Dict] = []
-            try:
-                for entry in sorted(current.iterdir(), key=lambda x: x.name):
-                    child = build(entry, depth + 1)
-                    if child:
-                        children.append(child)
-                if children:
-                    node["children"] = children
-            except PermissionError:
-                node["error"] = "Permission Denied"
-        return node
-        
-    tree = build(root, 0)
+    node: Dict[str, object] = {
+        "name": current.name,
+        "type": "directory" if current.is_dir() else "file",
+    }
+
+    if current.is_dir():
+        children: List[Dict[str, object]] = []
+        try:
+            for entry in sorted(current.iterdir(), key=lambda x: x.name):
+                child = _build_directory_tree_node(entry, depth + 1, max_depth, excluded)
+                if child:
+                    children.append(child)
+            if children:
+                node["children"] = children
+        except PermissionError:
+            node["error"] = "Permission Denied"
+    return node
+
+
+def _render_compact_tree(node: Optional[Dict[str, object]]) -> str:
+    if node is None:
+        return "(empty)\n"
+
+    def walk(current: Dict[str, object], prefix: str, is_last: bool, is_root: bool) -> List[str]:
+        name = str(current.get("name", ""))
+        if current.get("type") == "directory":
+            name += "/"
+
+        if is_root:
+            lines = [name]
+        else:
+            connector = "\\-- " if is_last else "|-- "
+            lines = [f"{prefix}{connector}{name}"]
+
+        raw_children = current.get("children", [])
+        children = raw_children if isinstance(raw_children, list) else []
+
+        child_prefix = "" if is_root else prefix + ("    " if is_last else "|   ")
+        for index, child in enumerate(children):
+            if isinstance(child, dict):
+                lines.extend(walk(child, child_prefix, index == len(children) - 1, False))
+
+        if "error" in current:
+            lines.append(f"{child_prefix}[error: {current['error']}]")
+
+        return lines
+
+    return "\n".join(walk(node, "", True, True)) + "\n"
+
+
+@mcp.tool()
+def directory_tree(
+    path: str,
+    max_depth: int = 4,
+    exclude_dirs: Optional[List[str]] = None,
+    compact: bool = True,
+) -> str:
+    """Get recursive tree. compact=True returns token-efficient text tree; compact=False returns JSON tree."""
+    root = validate_path(path)
+
+    default_excludes = [".git", ".venv", "__pycache__", "node_modules", ".pytest_cache"]
+    excluded = exclude_dirs if exclude_dirs is not None else default_excludes
+    max_depth = 3 if isinstance(max_depth, str) else max_depth
+    rtk_error: Optional[str] = None
+
+    if compact:
+        rtk_output, rtk_error = _rtk_tree(str(root), max_depth, excluded)
+        if rtk_output is not None:
+            return rtk_output
+
+    tree = _build_directory_tree_node(root, 0, max_depth, excluded)
+
+    if compact:
+        compact_output = _render_compact_tree(tree)
+        if rtk_error:
+            return f"[{rtk_error}; using built-in compact tree]\n{compact_output}"
+        return compact_output
+
     return json.dumps(tree, indent=2)
 
 

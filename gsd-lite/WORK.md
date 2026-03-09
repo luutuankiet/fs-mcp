@@ -9,7 +9,7 @@ execution_complete
 </current_mode>
 
 <active_task>
-None — PHASE-003 RTK Integration complete
+None — PHASE-003 RTK integration (read/grep/tree) complete
 </active_task>
 
 <parked_tasks>
@@ -35,6 +35,7 @@ fs-mcp should work seamlessly with all major AI providers (Claude, Gemini, GPT) 
 - LOG-011: Implemented Option B (APPEND_TO_FILE sentinel) — Addressed Critical Gap 1; allows direct appending without tail-matching
 - LOG-014: RTK Integration — RTK as required binary; `compact=True` (default) for token-efficient reads; `compact=False` for verbatim content
 - LOG-015: RTK Implementation Complete — read_files/grep_content integrated; propose_and_review errors enhanced; tests added
+- LOG-016: directory_tree RTK Integration — Compact text output (default) with RTK tree; built-in text fallback; JSON opt-out
 </decisions>
 
 <blockers>
@@ -83,6 +84,7 @@ Run tests to verify RTK integration; merge PR; pick next task
 
 ### New Capability: RTK Integration
 - LOG-014: RTK Integration Decision — Default to RTK-compressed reads; `full_content=True` for propose_and_review prep; RTK as required binary
+- LOG-016: directory_tree RTK Integration — Added `compact` text mode (default) with `rtk tree` and built-in fallback; README updated
 
 ---
 
@@ -2971,5 +2973,75 @@ if compact:
 - Tests and documentation
 **Next action:** Run tests, merge PR, pick next task (likely LOG-010 MCP Timeout Loops)
 **If issues found:** Check `_rtk_compress_content` and `_rtk_grep` helper functions in `server.py`
+
+---
+
+### [LOG-016] - [EXEC] - directory_tree RTK Integration for Compact Exploration - Task: PHASE-003
+**Timestamp:** 2026-03-09 18:00
+**Depends On:** LOG-014 (RTK vision), LOG-015 (RTK implementation patterns)
+
+---
+
+#### 1. Implementation Summary
+
+Integrated RTK into the `directory_tree` tool to provide token-efficient text trees by default, while maintaining backward compatibility for JSON output.
+
+| Task | File(s) Modified | Status |
+|------|------------------|--------|
+| RTK tree helper function | `src/fs_mcp/server.py` | ✅ Complete |
+| `directory_tree` compact mode | `src/fs_mcp/server.py" | ✅ Complete |
+| Built-in compact tree fallback | `src/fs_mcp/server.py` | ✅ Complete |
+| README documentation update | `README.md` | ✅ Complete |
+| Tests for tree integration | `tests/test_rtk_integration.py` | ✅ Complete |
+
+---
+
+#### 2. Technical Details
+
+**RTK Tree Helper (`_rtk_tree`):**
+- Proxies to `rtk tree` binary.
+- Respects `max_depth` via `-L` and `exclude_dirs` via `-I`.
+- Handles timeouts (30s) and binary-not-found gracefully.
+
+**Compact Mode Logic:**
+- `compact=True` (default): 
+  1. Try `_rtk_tree` for best compression (~70% savings).
+  2. Fall back to `_render_compact_tree` (built-in) if RTK fails.
+- `compact=False`: 
+  - Returns original recursive JSON structure.
+
+**Built-in Fallback:**
+Implemented `_build_directory_tree_node` and `_render_compact_tree` to ensure the tool always provides a readable text tree even in environments without the `tree` binary (which RTK requires).
+
+---
+
+#### 3. Output Comparison (Observation)
+
+| Format | Token Efficiency | Use Case |
+|--------|------------------|----------|
+| Compact Text (RTK) | High (~70-80% savings) | Default exploration |
+| Compact Text (Built-in) | Medium-High | Fallback exploration |
+| Legacy JSON | Low (structural overhead) | Tooling/Scripting |
+
+---
+
+#### 4. Verification
+
+- [x] Manual verification on `tmp/vscode-copy-to-llm` (Compact text matches expectations).
+- [x] Verified depth handling (`max_depth=2` vs `4`).
+- [x] Verified `compact=False` still returns JSON.
+- [x] New unit tests added to CI suite.
+
+---
+
+📦 STATELESS HANDOFF (for future agents reading this log)
+**Dependency chain:** LOG-016 ← LOG-015 (RTK patterns) ← LOG-014 (RTK vision)
+**What was implemented:** 
+- RTK integration for `directory_tree` with `compact=True` default.
+- Robust fallback to built-in text tree if RTK/tree binary is missing.
+- `compact=False` preserved for JSON output.
+- Tests and README documentation.
+**Next action:** Merge PR; pick next task (likely LOG-010).
+**Note:** `rtk tree` does not yet respect `.gitignore` (it uses a static noise list); use `rtk find/grep` for git-aware searches.
 
 ---

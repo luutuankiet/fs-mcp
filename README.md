@@ -147,7 +147,7 @@ Point your MCP client to `http://localhost:8124/mcp/` (SSE transport).
 |------|---------|
 | `grep_content` | Regex search with **section hints** — knows where functions end |
 | `read_files` | Multi-file read with `head`/`tail`, line ranges, `read_to_next_pattern`, or per-file `reads` arrays for multi-slice requests |
-| `directory_tree` | Recursive JSON tree (auto-excludes `.git`, `.venv`, `node_modules`) |
+| `directory_tree` | Recursive tree explorer: compact text by default (`compact=True`), legacy JSON with `compact=False` |
 | `search_files` | Glob pattern file discovery |
 | `get_file_info` | Metadata + token estimate + chunking recommendations |
 

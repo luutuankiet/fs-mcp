@@ -226,20 +226,14 @@ def _rtk_tree(path: str, max_depth: int, exclude_dirs: Optional[List[str]] = Non
 # Core tier: GSD-Lite optimized toolset (safe edit, grep-first, structured queries)
 # These are the tools exposed by default. Pass --all to expose everything.
 CORE_TOOLS = {
-    "list_allowed_directories",
     "read_files",
-    "read_media_file",
     "create_directory",
-    "list_directory_with_sizes",
-    "search_files",
-    "get_file_info",
     "directory_tree",
     "propose_and_review",
     "commit_review",
     "grep_content",
     "query_json",
     "query_yaml",
-    "analyze_gsd_work_log",
 }
 
 # Tools excluded from core tier (available with --all)
@@ -254,6 +248,12 @@ EXCLUDED_FROM_CORE = {
     "move_file",
     "append_text",
     "grounding_search",
+    "analyze_gsd_work_log",
+    "search_files",
+    "read_media_file",
+    "list_allowed_directories",
+    "list_directory_with_sizes",
+    "get_file_info",
 }
 
 

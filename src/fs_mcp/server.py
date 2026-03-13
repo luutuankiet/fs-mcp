@@ -55,7 +55,7 @@ WHEN TO USE: ANY time you make 2+ changes to the same file. Saves tokens and rev
 
 EDIT_PAIR_MATCH_TEXT_DESCRIPTION = f"""Exact text to find. Must appear exactly once. Copy character-for-character including whitespace. Max {MATCH_TEXT_MAX_LENGTH} chars."""
 
-LARGE_FILE_PASSTHROUGH_DESCRIPTION = f"Set True to read large JSON/YAML files (>{LARGE_FILE_TOKEN_THRESHOLD} tokens). Default False suggests using query_json/query_yaml instead."
+LARGE_FILE_PASSTHROUGH_DESCRIPTION = f"Set True to read large JSON/YAML files (>{LARGE_FILE_TOKEN_THRESHOLD} tokens). Default False suggests using query_jq/query_yq instead."
 
 BYPASS_MATCH_TEXT_LIMIT_DESCRIPTION = f"Set True to allow match_text over {MATCH_TEXT_MAX_LENGTH} chars. Try using 'edits' to split into smaller chunks first."
 
@@ -232,8 +232,8 @@ CORE_TOOLS = {
     "propose_and_review",
     "commit_review",
     "grep_content",
-    "query_json",
-    "query_yaml",
+    "query_jq",
+    "query_yq",
 }
 
 # Tools excluded from core tier (available with --all)
@@ -686,7 +686,7 @@ def read_files(
                         file_type = "n/a ignore this line"
                         if file_ext in ['.json', '.yaml', '.yml']:
                             file_type = "JSON" if file_ext == '.json' else "YAML"
-                            query_tool = "query_json" if file_type == "JSON" else "query_yaml"
+                            query_tool = "query_jq" if file_type == "JSON" else "query_yq"
                         error_message = (
                             f"Error: {file_request.path} is a large {file_type} file (~{tokens:,.0f} tokens).\n\n"
                             "Reading the entire file may overflow your context window. Consider using these if the file is json / yaml:\n"
@@ -1410,7 +1410,7 @@ def grep_content(
 
 
 @mcp.tool()
-def query_json(
+def query_jq(
     file_path: Annotated[
         str,
         Field(description="Path to the JSON file to query. Supports relative or absolute paths.")
@@ -1437,16 +1437,16 @@ def query_json(
     - Count items: '.items | length'
 
     **Multiline Queries (with comments):**
-    query_json("data.json", '''
+    query_jq("data.json", '''
     # Filter active items
     .items[] | select(.active == true)
     ''')
 
     **Workflow Example:**
-    1. Get structure overview: query_json("data.json", "keys")
-    2. Count array items: query_json("data.json", ".items | length")
-    3. Explore first few: query_json("data.json", ".items[0:5]")
-    4. Filter specific: query_json("data.json", ".items[] | select(.status == 'active')")
+    1. Get structure overview: query_jq("data.json", "keys")
+    2. Count array items: query_jq("data.json", ".items | length")
+    3. Explore first few: query_jq("data.json", ".items[0:5]")
+    4. Filter specific: query_jq("data.json", ".items[] | select(.status == 'active')")
 
     **Result Limit:** Returns first 100 results. For more, use slicing: .items[100:200]
     """
@@ -1504,7 +1504,7 @@ def query_json(
 
 
 @mcp.tool()
-def query_yaml(
+def query_yq(
     file_path: Annotated[
         str,
         Field(description="Path to the file to query. Supports relative or absolute paths.")
@@ -1526,9 +1526,9 @@ def query_yaml(
     Query structured data files using yq (mikefarah/yq). Supports YAML, JSON, XML, CSV, TSV, TOML, Properties, INI, and HCL formats.
 
     **Multi-Format Examples:**
-    - XML (Tableau .twb): `query_yaml("file.twb", ". | keys", input_format="xml")`
-    - TOML: `query_yaml("pyproject.toml", ".project.name", input_format="toml")`
-    - CSV: `query_yaml("data.csv", ".[0]", input_format="csv")` (first row as object)
+    - XML (Tableau .twb): `query_yq("file.twb", ". | keys", input_format="xml")`
+    - TOML: `query_yq("pyproject.toml", ".project.name", input_format="toml")`
+    - CSV: `query_yq("data.csv", ".[0]", input_format="csv")` (first row as object)
 
     **Common Query Patterns:**
     - Get field: '.field_name' | Iterate: '.items[]' | Filter: '.items[] | select(.active)'

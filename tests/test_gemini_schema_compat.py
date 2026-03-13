@@ -149,8 +149,8 @@ class TestCriticalToolsCompatible:
         "read_files",       # Has FileReadRequest nested model
         "propose_and_review",  # Has EditPair nested model
         "grep_content",     # Core tool
-        "query_json",       # Core tool
-        "query_yaml",       # Core tool
+        "query_jq",         # Core tool
+        "query_yq",         # Core tool
     ])
     def test_tool_passes_full_validation(self, all_tool_schemas, tool_name):
         """Each critical tool must pass full Gemini validation."""

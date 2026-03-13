@@ -122,11 +122,11 @@ def check_required_dependencies() -> None:
     
     jq_ok, jq_install = check_jq()
     if not jq_ok:
-        missing.append(('jq', 'query_json', jq_install))
+        missing.append(('jq', 'query_jq', jq_install))
     
     yq_ok, yq_install = check_yq()
     if not yq_ok:
-        missing.append(('yq', 'query_yaml (YAML/XML/TOML/CSV/TSV/INI/HCL)', yq_install))
+        missing.append(('yq', 'query_yq (YAML/XML/TOML/CSV/TSV/INI/HCL)', yq_install))
     
     rtk_ok, rtk_install = check_rtk()
     if not rtk_ok:

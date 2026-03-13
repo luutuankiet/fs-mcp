@@ -162,8 +162,8 @@ Point your MCP client to `http://localhost:8124/mcp/` (SSE transport).
 
 | Tool | Purpose |
 |------|---------|
-| `query_json` | JQ queries on large JSON files (bounded output) |
-| `query_yaml` | YQ queries on YAML files |
+| `query_jq` | JQ queries on large JSON files (bounded output) |
+| `query_yq` | YQ queries on structured data files (YAML, XML, TOML, CSV, TSV, INI, HCL) |
 
 ### Utilities
 
@@ -198,8 +198,8 @@ tests/                 # pytest suite (including Gemini compat CI guard)
 
 **Required CLI tools** (fs-mcp exits with install instructions if missing):
 - `ripgrep` (`rg`) — powers `grep_content`
-- `jq` — powers `query_json`  
-- `yq` — powers `query_yaml` (also handles XML, TOML, CSV, TSV, INI, HCL)
+- `jq` — powers `query_jq`
+- `yq` — powers `query_yq` (also handles XML, TOML, CSV, TSV, INI, HCL)
 
 ```bash
 # macOS

@@ -9,7 +9,7 @@ execution_complete
 </current_mode>
 
 <active_task>
-None — PHASE-003 RTK integration (read/grep/tree) complete
+None — LOG-017 DuckDB query tool complete
 </active_task>
 
 <parked_tasks>
@@ -36,15 +36,17 @@ fs-mcp should work seamlessly with all major AI providers (Claude, Gemini, GPT) 
 - LOG-014: RTK Integration — RTK as required binary; `compact=True` (default) for token-efficient reads; `compact=False` for verbatim content
 - LOG-015: RTK Implementation Complete — read_files/grep_content integrated; propose_and_review errors enhanced; tests added
 - LOG-016: directory_tree RTK Integration — Compact text output (default) with RTK tree; built-in text fallback; JSON opt-out
+- LOG-017: DuckDB Query Tool — New `query_duckdb` core tool; `duckdb>=1.0.0` required dep; JSON array output (proxy-safe); multi-statement SQL blocked; 35/37 stress tests passed
+- LOG-017: Design — In-process Python library (no subprocess), ephemeral `:memory:` per call, agent controls LIMIT, proxy handles pagination via `read_cache`
 </decisions>
 
 <blockers>
-- None (LOG-009 PR ready for merge)
+- None
 - Upcoming: LOG-010 open questions on retry behavior
 </blockers>
 
 <next_action>
-Run tests to verify RTK integration; merge PR; pick next task
+Add test_query_duckdb.py; update README with query_duckdb docs; consider token efficiency pass on tool descriptions (retro finding: ~46% reduction possible but multi-intent tools justified)
 </next_action>
 
 ---
@@ -85,6 +87,11 @@ Run tests to verify RTK integration; merge PR; pick next task
 ### New Capability: RTK Integration
 - LOG-014: RTK Integration Decision — Default to RTK-compressed reads; `full_content=True` for propose_and_review prep; RTK as required binary
 - LOG-016: directory_tree RTK Integration — Added `compact` text mode (default) with `rtk tree` and built-in fallback; README updated
+
+### New Capability: DuckDB SQL Query
+- LOG-017: DuckDB Integration — `query_duckdb` tool for SQL analytics on CSV/Parquet/JSON files; fills gap where grep+yq break (no GROUP BY, JOINs, aggregations)
+- LOG-017: Proxy Compatibility — JSON array output triggers mcpproxy-go smart truncation path; `read_cache` pagination confirmed working on 10MB payloads
+- LOG-017: Retro — Tool token efficiency audit found ~46% reduction possible across all tools, but multi-intent tools (read_files, propose_and_review) justified in verbosity
 
 ---
 
@@ -3043,5 +3050,134 @@ Implemented `_build_directory_tree_node` and `_render_compact_tree` to ensure th
 - Tests and README documentation.
 **Next action:** Merge PR; pick next task (likely LOG-010).
 **Note:** `rtk tree` does not yet respect `.gitignore` (it uses a static noise list); use `rtk find/grep` for git-aware searches.
+
+---
+
+### [LOG-017] - [EXEC] [DECISION] - DuckDB SQL Query Tool Implementation - Task: DUCKDB-001
+**Timestamp:** 2026-03-13 14:00
+**Depends On:** LOG-008 (core tier tooling), LOG-014 (RTK integration pattern)
+
+---
+
+#### 1. Motivation
+
+The grep + yq combo broke down for tabular data analysis during a CSV diff validation (5,114 rows across 22 columns). Specific failures:
+
+| Operation | grep+yq | DuckDB SQL |
+|-----------|---------|------------|
+| GROUP BY with counts | ❌ yq lacks `group_by` | ✅ Native SQL |
+| Cross-file JOINs | ❌ Impossible | ✅ `read_csv_auto()` in FROM |
+| Field-level filtering | ❌ Grep false positives on CSV content | ✅ WHERE on typed columns |
+| Direction-of-change analysis | ❌ Required ~15 calls, still incomplete | ✅ One CTE query |
+
+**Evidence:** In the original session, analyzing `diff.csv` required ~15 grep+yq calls with gaps remaining (per-project counts had false positives, direction-of-change was impossible). With `query_duckdb`, the same analysis completed in 3 queries.
+
+#### 2. Design Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|----------|
+| Dependency type | Python library (`duckdb>=1.0.0` in pyproject.toml) | In-process, no subprocess/temp file dance — simpler than jq/yq pattern |
+| Statefulness | Ephemeral `:memory:` per call | Stateless fits MCP model; COPY TO for multi-step workflows |
+| Output format | JSON array (`json.dumps(result_dicts, default=str)`) | Proxy-safe: triggers mcpproxy-go `createTruncatedWithCache` path for `read_cache` pagination (LOG-006 design rule from another project) |
+| Row cap | None — agent controls via LIMIT | Proxy handles pagination; agent owns query responsibility |
+| Timeout | `threading.Thread` + `conn.interrupt()` | DuckDB has no native timeout; threading is clean and interruptible |
+| Tool tier | CORE_TOOLS (default-exposed) | Query tool like query_json/query_yaml — always available |
+| Security | Multi-statement SQL blocked (`; ` detection) | Prevents DDL injection via semicolons |
+| JSON safety | `math.isinf()`/`math.isnan()` → `null` | `Infinity`/`NaN` are invalid strict JSON |
+
+**Rejected alternatives:**
+- Separate conversion tool (CSV → DB) + query tool: Rejected because DuckDB's `read_csv_auto()` eliminates the ETL step
+- Optional dependency: Rejected by user — always available, no conditional import
+- Markdown table output: Rejected after discovering proxy truncation risk (plain text >20K chars gets hard-cut with no cache key)
+- 100-row cap: Removed — agent controls result size via SQL LIMIT; proxy paginates large results
+
+#### 3. Implementation
+
+**Files changed (3):**
+
+| File | Change |
+|------|--------|
+| `pyproject.toml` | Added `"duckdb>=1.0.0"` to dependencies |
+| `src/fs_mcp/server.py` | Added `import duckdb`, `import threading`, `import math`; added `"query_duckdb"` to `CORE_TOOLS`; appended `query_duckdb()` function |
+| *(no utils.py changes)* | DuckDB is a pip dep, not a binary — no `check_duckdb()` or install instructions needed |
+
+**Function signature:**
+```python
+@mcp.tool()
+def query_duckdb(
+    sql: Annotated[str, Field(description="...")],
+    timeout: Annotated[int, Field(default=30, description="...")] = 30
+) -> str:
+```
+
+**Key implementation details:**
+- `validate_path()` called on COPY TO output paths (extracts path from `TO 'path'` in SQL)
+- `conn.interrupt()` from main thread cancels long-running queries on timeout
+- `json.dumps(result_dicts, default=str)` handles DuckDB-specific types (datetime, Decimal)
+- Non-SELECT statements (COPY TO, CREATE) return confirmation string, not JSON array
+
+#### 4. Proxy Compatibility Fix
+
+**Problem discovered mid-implementation:** mcpproxy-go has two truncation paths (from LOG-006 in another project's WORK.md):
+
+```mermaid
+flowchart TD
+    A[Tool response > 20K chars] --> B{Valid JSON array?}
+    B -->|Yes| C[createTruncatedWithCache<br/>bbolt store - 2hr TTL]
+    B -->|No| D[simpleTruncate<br/>Hard cut - no cache]
+    C --> E[read_cache pagination works]
+    D --> F[Agent loses data silently]
+```
+
+Original markdown table output would trigger the `simpleTruncate` path for wide tables (100 rows × 10 cols × 200-char cells = 200K chars). Switched to JSON array output.
+
+**Verified:** Stress test confirmed proxy correctly caches 10MB payloads (5,114 rows × 25 columns) with `read_cache` pagination working end-to-end.
+
+#### 5. Stress Test Results
+
+**5 test suites, 37 tests total across parallel agents:**
+
+| Suite | Pass | Fail | Key Finding |
+|-------|------|------|-------------|
+| Aggregations + CTEs | 6/7 | 1 | Window func + `read_csv_auto()` = upstream DuckDB limitation |
+| Error handling | 9/10 | 1 | SQL injection discovered → fixed (multi-statement block) |
+| Large results + proxy | 6/6 | 0 | `read_cache` pagination confirmed on 10MB payloads |
+| Multi-file + writes | 7/7 | 0 | COPY TO CSV/Parquet round-trip verified |
+| **Large 200MB files** | **7/7** | **0** | **FULL OUTER JOIN on 741K × 744K rows < 60s** |
+
+**Error handling quality:** DuckDB errors are agent-friendly — suggests candidate columns on typos, shows caret position on syntax errors, clear IO Error on missing files.
+
+**Known limitations (upstream DuckDB, not our tool):**
+- Window functions directly on `read_csv_auto()` trigger serialization error → workaround: wrap in CTE
+- Glob with schema mismatch requires `union_by_name=true`
+
+#### 6. Token Efficiency Retro
+
+Audited all 20 tool signatures holistically. Finding: `query_duckdb` is 4th largest at ~315 tokens — NOT the worst offender.
+
+| Rank | Tool | Est. Tokens | Note |
+|------|------|-------------|------|
+| 1 | read_files | ~1,190 | Multi-intent: 5 read modes — verbosity justified |
+| 2 | propose_and_review | ~1,158 | Multi-intent: 5 edit modes — verbosity justified |
+| 3 | grep_content | ~660 | Workflow guidance embedded |
+| 4 | query_duckdb | ~315 | Slight duplication between param + docstring |
+
+**Decision:** Multi-intent tools (read_files, propose_and_review) keep verbose descriptions — the docstring acts as a mode dispatch table that guides agents to the right intent. Token cost buys real agent accuracy.
+
+**Systemic anti-pattern identified:** Param-Docstring Echo Chamber — same info in Field description AND docstring. ~46% total reduction possible but low priority given multi-intent justification.
+
+Key research findings (Anthropic, OpenAI, MCP community):
+- *"Only add context Claude doesn't already have"* — Claude knows SQL, don't teach GROUP BY
+- Tool selection accuracy: 49% → 74% when reducing total tool tokens from 134K to dynamic search
+- Tool-level descriptions impact *selection*; param descriptions impact *invocation* — don't duplicate
+
+---
+
+📦 STATELESS HANDOFF
+**Dependency chain:** LOG-017 ← LOG-008 (core tier) ← LOG-014 (RTK pattern)
+**What was built:** `query_duckdb` — DuckDB SQL tool for CSV/Parquet/JSON analytics, JSON array output (proxy-safe), multi-statement SQL blocked, stress-tested on 200MB files
+**What was decided:** Required dep (not optional), CORE_TOOLS tier, no row cap (agent owns LIMIT), JSON array format (proxy pagination), multi-intent tool descriptions justified in verbosity
+**Next action:** Add `test_query_duckdb.py`; update README; consider token efficiency pass as separate task
+**If pivoting:** Implementation: `src/fs_mcp/server.py:1706`. Proxy context: mcpproxy-go truncation in `internal/truncate/truncator.go`. Token audit data in this session's chat history.
 
 ---

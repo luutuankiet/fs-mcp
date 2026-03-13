@@ -15,6 +15,9 @@ import tempfile
 import time
 import shutil
 import subprocess
+import threading
+import duckdb
+import math
 
 from .edit_tool import EditResult, RooStyleEditTool, propose_and_review_logic, MATCH_TEXT_MAX_LENGTH
 from .utils import check_ripgrep, check_jq, check_yq, check_rtk, check_required_dependencies
@@ -234,6 +237,7 @@ CORE_TOOLS = {
     "grep_content",
     "query_jq",
     "query_yq",
+    "query_duckdb",
 }
 
 # Tools excluded from core tier (available with --all)
@@ -1698,3 +1702,108 @@ def analyze_gsd_work_log(
     except Exception as e:
         return f"Error analyzing file: {str(e)}"
     
+
+@mcp.tool()
+def query_duckdb(
+    sql: Annotated[
+        str,
+        Field(description="SQL query to execute via DuckDB. Use file-reading functions to query data files directly:\n"
+              "- CSV: `SELECT * FROM read_csv_auto('data.csv') LIMIT 10`\n"
+              "- Parquet: `SELECT * FROM read_parquet('data.parquet')`\n"
+              "- JSON: `SELECT * FROM read_json_auto('data.json')`\n"
+              "- Glob: `SELECT * FROM read_csv_auto('data/*.csv')`\n\n"
+              "Supports full SQL: JOIN, GROUP BY, HAVING, window functions, CTEs, UNION, PIVOT.\n\n"
+              "**Write-back:** `COPY (SELECT ...) TO 'output.csv' (HEADER, DELIMITER ',')`\n"
+              "**Format conversion:** `COPY (SELECT * FROM read_csv_auto('big.csv')) TO 'big.parquet' (FORMAT PARQUET)`\n"
+              "**Schema inspect:** `DESCRIBE SELECT * FROM read_csv_auto('data.csv')`")
+    ],
+    timeout: Annotated[
+        int,
+        Field(default=30, description="Query timeout in seconds. Default is 30. Increase for complex queries on large files.")
+    ] = 30
+) -> str:
+    """
+    Query tabular data files using DuckDB SQL. Reads CSV, Parquet, and JSON files directly — no import step needed.
+
+    **Why use this over grep/yq for tabular data:**
+    - Full SQL: GROUP BY, JOIN, window functions, CTEs, PIVOT
+    - No false positives from pattern matching on CSV content
+    - Accurate aggregations and field-level filtering
+
+    **Common Patterns:**
+    - Explore: `SELECT * FROM read_csv_auto('data.csv') LIMIT 10`
+    - Aggregate: `SELECT col, COUNT(*) FROM read_csv_auto('data.csv') GROUP BY 1 ORDER BY 2 DESC`
+    - Join files: `SELECT a.*, b.label FROM read_csv_auto('a.csv') a JOIN read_csv_auto('b.csv') b ON a.id = b.id`
+    - Filter + export: `COPY (SELECT * FROM read_csv_auto('data.csv') WHERE status = 'active') TO 'filtered.csv' (HEADER)`
+    - Schema: `DESCRIBE SELECT * FROM read_csv_auto('data.csv')`
+    - Convert: `COPY (SELECT * FROM read_csv_auto('big.csv')) TO 'big.parquet' (FORMAT PARQUET)`
+
+    **Result Format:** JSON array of objects (proxy-safe for pagination via read_cache).
+    Control result size with LIMIT in your SQL query.
+    """
+    # For COPY TO / EXPORT statements, validate the output path is within allowed directories
+    write_match = re.search(r"\bTO\s+'([^']+)'", sql, re.IGNORECASE)
+    if write_match:
+        output_path = write_match.group(1)
+        try:
+            validate_path(output_path)
+        except ValueError as e:
+            return f"Error: Output path validation failed — {e}"
+
+    # Block multi-statement SQL (security: prevent DDL injection via semicolons)
+    stripped_sql = sql.strip().rstrip(';')
+    if ';' in stripped_sql:
+        return "Error: Multi-statement SQL is not allowed. Submit one statement at a time."
+
+    conn = duckdb.connect(":memory:")
+    try:
+        # Execute with timeout using threading + conn.interrupt()
+        result_holder = [None]
+        error_holder = [None]
+
+        def _execute():
+            try:
+                result_holder[0] = conn.execute(sql)
+            except Exception as e:
+                error_holder[0] = e
+
+        thread = threading.Thread(target=_execute)
+        thread.start()
+        thread.join(timeout=timeout)
+
+        if thread.is_alive():
+            conn.interrupt()
+            thread.join(timeout=5)
+            return f"Error: Query timed out after {timeout} seconds. Simplify your query or increase timeout."
+
+        if error_holder[0] is not None:
+            return f"DuckDB error: {error_holder[0]}"
+
+        result = result_holder[0]
+
+        # Non-SELECT statements (COPY TO, CREATE, etc.) — no result set
+        if result.description is None:
+            if write_match:
+                return f"Query executed successfully. Output written to `{write_match.group(1)}`."
+            return "Query executed successfully."
+
+        columns = [desc[0] for desc in result.description]
+        rows = result.fetchall()
+
+        if not rows:
+            return "No results found."
+
+        # Return JSON array — proxy-safe for read_cache pagination (LOG-006 design rule).
+        # Agent controls result size via LIMIT in SQL query.
+        # Sanitize non-JSON-safe float values (Infinity, NaN → null)
+        result_dicts = [
+            {col: (None if isinstance(val, float) and (math.isinf(val) or math.isnan(val)) else val)
+             for col, val in zip(columns, row)}
+            for row in rows
+        ]
+        return json.dumps(result_dicts, default=str)
+
+    except Exception as e:
+        return f"DuckDB error: {e}"
+    finally:
+        conn.close()

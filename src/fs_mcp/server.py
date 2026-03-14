@@ -13,6 +13,9 @@ from pydantic import BaseModel, Field
 from fastmcp import FastMCP
 import tempfile
 import time
+import sys
+import urllib.request
+import urllib.error
 import shutil
 import subprocess
 import threading
@@ -223,6 +226,110 @@ def _rtk_tree(path: str, max_depth: int, exclude_dirs: Optional[List[str]] = Non
         return None, "RTK binary not found"
     except Exception as e:
         return None, f"RTK tree error: {e}"
+
+
+# --- GSD Reader Auto-Dump ---
+# Opt-in via GSD_READER_REMOTE env var. Debounced to coalesce rapid-fire commits.
+
+GSD_ARTIFACT_NAMES = {"WORK.md", "PROJECT.md", "ARCHITECTURE.md"}
+GSD_DUMP_DEBOUNCE_SECONDS = 10
+_gsd_dump_lock = threading.Lock()
+_gsd_dump_pending: Dict[str, threading.Timer] = {}
+
+
+def _is_gsd_artifact(path_obj: Path) -> bool:
+    """Check if a file is a GSD-Lite artifact inside a gsd-lite/ directory."""
+    return path_obj.name in GSD_ARTIFACT_NAMES and path_obj.parent.name == "gsd-lite"
+
+
+def _trigger_gsd_dump(path_obj: Path):
+    """
+    Debounced fire-and-forget: schedules npx gsd-reader dump after a quiet period.
+    Multiple rapid commits to the same gsd-lite/ dir coalesce into one dump.
+
+    Env vars (set in .zshrc):
+      GSD_READER_REMOTE  - required to enable
+      GSD_READER_USER    - optional basic auth username
+      GSD_READER_PASS    - inherited by subprocess, not passed as CLI arg
+    """
+    remote = os.environ.get("GSD_READER_REMOTE")
+    if not remote:
+        return
+
+    worklog_path = path_obj.parent / "WORK.md"
+    dump_key = str(worklog_path)
+
+    def _do_dump():
+        try:
+            with _gsd_dump_lock:
+                _gsd_dump_pending.pop(dump_key, None)
+
+            if not worklog_path.exists():
+                print(f"[gsd-dump] Skip: {worklog_path} not found", file=sys.stderr, flush=True)
+                return
+
+            # Read markdown artifacts
+            gsd_dir = worklog_path.parent
+            work_content = worklog_path.read_text(encoding="utf-8")
+
+            project_path = gsd_dir / "PROJECT.md"
+            project_content = project_path.read_text(encoding="utf-8") if project_path.exists() else ""
+
+            arch_path = gsd_dir / "ARCHITECTURE.md"
+            arch_content = arch_path.read_text(encoding="utf-8") if arch_path.exists() else ""
+
+            # Derive project name from path (last 2 segments, same as CLI)
+            parts = gsd_dir.parts
+            project_name = "/".join(parts[-2:])
+
+            # Build JSON payload (markdown only — server does the rendering)
+            payload = json.dumps({
+                "work": work_content,
+                "project": project_content,
+                "architecture": arch_content,
+                "base_path": gsd_dir.name,
+            }).encode("utf-8")
+
+            # Build request with optional basic auth
+            url = f"{remote}/upload-markdown/{project_name}"
+            headers = {
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0 (compatible; gsd-lite-autodump/1.0)",
+            }
+
+            user = os.environ.get("GSD_READER_USER", "")
+            password = os.environ.get("GSD_READER_PASS", "")
+            if user:
+                auth = base64.b64encode(f"{user}:{password}".encode()).decode()
+                headers["Authorization"] = f"Basic {auth}"
+
+            req = urllib.request.Request(url, data=payload, headers=headers)
+
+            size_kb = len(payload) / 1024
+            print(f"[gsd-dump] Uploading {size_kb:.0f}KB -> {url}", file=sys.stderr, flush=True)
+
+            resp = urllib.request.urlopen(req, timeout=300)
+            body = resp.read().decode("utf-8", errors="replace")
+            print(f"[gsd-dump] Done ({resp.getcode()}): {body.strip()}", file=sys.stderr, flush=True)
+
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")
+            print(f"[gsd-dump] HTTP {e.code}: {body.strip()}", file=sys.stderr, flush=True)
+        except urllib.error.URLError as e:
+            print(f"[gsd-dump] Network error: {e.reason}", file=sys.stderr, flush=True)
+        except Exception as e:
+            print(f"[gsd-dump] Unexpected error: {e}", file=sys.stderr, flush=True)
+
+    with _gsd_dump_lock:
+        existing = _gsd_dump_pending.get(dump_key)
+        if existing:
+            existing.cancel()
+
+        timer = threading.Timer(GSD_DUMP_DEBOUNCE_SECONDS, _do_dump)
+        timer.daemon = True
+        _gsd_dump_pending[dump_key] = timer
+        timer.start()
+        print(f"[gsd-dump] Scheduled in {GSD_DUMP_DEBOUNCE_SECONDS}s: {dump_key}", file=sys.stderr, flush=True)
 
 
 # --- Tool Tier Configuration ---
@@ -1190,7 +1297,7 @@ async def propose_and_review(
     - user_feedback_diff is a unified diff showing exactly what user changed
     - If workspace root contains `FS_MCP_FLAG`, this tool skips interactive review and commits directly
     """
-    return await propose_and_review_logic(
+    result = await propose_and_review_logic(
         validate_path,
         IS_VSCODE_CLI_AVAILABLE,
         path,
@@ -1202,6 +1309,17 @@ async def propose_and_review(
         bypass_match_text_limit,
         dangerous_skip_permissions=_dangerous_skip_permissions_enabled(),
     )
+
+    # Auto-dump GSD artifacts on commit (non-blocking, debounced)
+    if "COMMITTED" in result:
+        try:
+            committed_path = validate_path(path)
+            if _is_gsd_artifact(committed_path):
+                _trigger_gsd_dump(committed_path)
+        except Exception:
+            pass  # Never let dump logic break the main flow
+
+    return result
 
 @mcp.tool()
 def commit_review(session_path: str, original_path: str) -> str:
@@ -1219,6 +1337,11 @@ def commit_review(session_path: str, original_path: str) -> str:
         original_file.write_text(final_content, encoding='utf-8')
     except Exception as e:
         raise IOError(f"Failed to write final content to {original_path}: {e}")
+
+    # Auto-dump GSD artifacts on commit (non-blocking, debounced)
+    if _is_gsd_artifact(original_file):
+        _trigger_gsd_dump(original_file)
+
     try:
         shutil.rmtree(session_dir)
     except Exception as e:

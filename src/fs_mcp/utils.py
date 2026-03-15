@@ -18,43 +18,54 @@ def _format_install_instructions(tool: str, system: str, dist: str) -> str:
     
     instructions = {
         'ripgrep': {
-            'Darwin': 'brew install ripgrep',
-            'Windows': 'choco install ripgrep',
+            'Darwin': 'brew install ripgrep  # https://github.com/BurntSushi/ripgrep#installation',
+            'Windows': 'choco install ripgrep  # or: winget install BurntSushi.ripgrep  # https://github.com/BurntSushi/ripgrep#installation',
             'Linux': {
-                'ubuntu': 'sudo apt-get install ripgrep',
-                'debian': 'sudo apt-get install ripgrep',
+                'ubuntu': 'sudo apt-get install ripgrep  # or: curl -LO https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep_14.1.1-1_amd64.deb && sudo dpkg -i ripgrep_14.1.1-1_amd64.deb',
+                'debian': 'sudo apt-get install ripgrep  # or: curl -LO https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep_14.1.1-1_amd64.deb && sudo dpkg -i ripgrep_14.1.1-1_amd64.deb',
                 'fedora': 'sudo dnf install ripgrep',
                 'centos': 'sudo dnf install ripgrep',
                 'rhel': 'sudo dnf install ripgrep',
                 'arch': 'sudo pacman -S ripgrep',
-                'default': 'Install via package manager or: cargo install ripgrep',
+                'alpine': 'sudo apk add ripgrep',
+                'opensuse': 'sudo zypper install ripgrep',
+                'default': 'curl -LO https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep_14.1.1-1_amd64.deb && sudo dpkg -i ripgrep_14.1.1-1_amd64.deb  # deb-based, or use your package manager  # https://github.com/BurntSushi/ripgrep#installation',
             },
         },
         'jq': {
-            'Darwin': 'brew install jq',
-            'Windows': 'choco install jq',
+            'Darwin': 'brew install jq  # https://jqlang.github.io/jq/download/',
+            'Windows': 'choco install jq  # or: winget install jqlang.jq  # https://jqlang.github.io/jq/download/',
             'Linux': {
-                'ubuntu': 'sudo apt-get install jq',
-                'debian': 'sudo apt-get install jq',
+                'ubuntu': 'sudo apt-get install jq  # or: curl -sLo /usr/local/bin/jq https://github.com/jqlang/jq/releases/latest/download/jq-linux-amd64 && chmod +x /usr/local/bin/jq',
+                'debian': 'sudo apt-get install jq  # or: curl -sLo /usr/local/bin/jq https://github.com/jqlang/jq/releases/latest/download/jq-linux-amd64 && chmod +x /usr/local/bin/jq',
                 'fedora': 'sudo dnf install jq',
                 'centos': 'sudo dnf install jq',
                 'rhel': 'sudo dnf install jq',
                 'arch': 'sudo pacman -S jq',
-                'default': 'Install via package manager or download from https://jqlang.github.io/jq/download/',
+                'alpine': 'sudo apk add jq',
+                'opensuse': 'sudo zypper install jq',
+                'default': 'curl -sLo /usr/local/bin/jq https://github.com/jqlang/jq/releases/latest/download/jq-linux-amd64 && chmod +x /usr/local/bin/jq  # https://jqlang.github.io/jq/download/',
             },
         },
         'yq': {
-            'Darwin': 'brew install yq',
-            'Windows': 'choco install yq',
+            'Darwin': 'brew install yq  # https://github.com/mikefarah/yq#install',
+            'Windows': 'choco install yq  # or: winget install MikeFarah.yq  # https://github.com/mikefarah/yq#install',
             'Linux': {
-                'default': 'brew install yq  # or download from https://github.com/mikefarah/yq/releases',
+                'ubuntu': 'sudo snap install yq  # or: wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq && chmod +x /usr/local/bin/yq',
+                'debian': 'wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq && chmod +x /usr/local/bin/yq',
+                'fedora': 'sudo dnf install yq  # or: wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq && chmod +x /usr/local/bin/yq',
+                'centos': 'wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq && chmod +x /usr/local/bin/yq',
+                'rhel': 'wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq && chmod +x /usr/local/bin/yq',
+                'arch': 'sudo pacman -S go-yq',
+                'alpine': 'sudo apk add yq-go',
+                'default': 'wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq && chmod +x /usr/local/bin/yq  # https://github.com/mikefarah/yq#install',
             },
         },
         'rtk': {
-            'Darwin': 'brew install rtk',
-            'Windows': 'cargo install --git https://github.com/rtk-ai/rtk',
+            'Darwin': 'brew install rtk-ai/tap/rtk  # or: curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh',
+            'Windows': 'cargo install --git https://github.com/rtk-ai/rtk  # or download from https://github.com/rtk-ai/rtk/releases',
             'Linux': {
-                'default': 'brew install rtk  # or: cargo install --git https://github.com/rtk-ai/rtk',
+                'default': 'curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh  # installs to ~/.local/bin  # https://github.com/rtk-ai/rtk#installation',
             },
         },
     }
@@ -157,14 +168,23 @@ def _print_dependency_error(missing: list[tuple[str, str, str]]) -> None:
     
     # One-liner for common case
     system, dist = _get_platform_info()
+    # Tools available in standard package managers vs those needing manual install
+    apt_available = {'ripgrep', 'jq'}
+    brew_packages = {'ripgrep': 'ripgrep', 'jq': 'jq', 'yq': 'yq', 'rtk': 'rtk-ai/tap/rtk'}
+
     if system == 'Darwin':
-        tools = ' '.join(t[0].split()[0].lower() for t in missing)
+        tools = ' '.join(brew_packages.get(t[0].split()[0].lower(), t[0].split()[0].lower()) for t in missing)
         print(f"  💡 Quick fix (macOS): brew install {tools}")
     elif system == 'Linux':
         if dist in ['ubuntu', 'debian']:
-            # ripgrep binary is 'rg' but package is 'ripgrep'
-            tools = ' '.join('ripgrep' if 'ripgrep' in t[0] else t[0].split()[0].lower() for t in missing)
-            print(f"  💡 Quick fix (apt): sudo apt-get install {tools}")
+            apt_tools = [t for t in missing if t[0].split()[0].lower().replace('(rg)', '').strip() in apt_available or 'ripgrep' in t[0]]
+            other_tools = [t for t in missing if t not in apt_tools]
+            if apt_tools:
+                pkg_names = ' '.join('ripgrep' if 'ripgrep' in t[0] else t[0].split()[0].lower() for t in apt_tools)
+                print(f"  💡 Quick fix (apt): sudo apt-get install {pkg_names}")
+            if other_tools:
+                for t in other_tools:
+                    print(f"  💡 {t[0]}: see install command above (not available via apt)")
     
     print()
     print("=" * 70)

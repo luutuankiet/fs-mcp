@@ -3,6 +3,7 @@ from typing import Optional, List, Dict, Any
 import asyncio
 import difflib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -12,6 +13,8 @@ from pathlib import Path
 
 # --- Configuration Constants ---
 MATCH_TEXT_MAX_LENGTH = 2000
+NEW_STRING_MAX_LENGTH = 5_000_000  # 5MB - prevent OOM from huge replacements
+MAX_FILE_SIZE = 50_000_000  # 50MB - prevent OOM from reading huge files
 # Token-efficient error hint threshold - we NEVER dump full file content
 # Instead, we provide fuzzy suggestions and file outlines
 ERROR_HINT_FUZZY_THRESHOLD = 0.6  # Minimum similarity for fuzzy suggestions
@@ -204,7 +207,7 @@ def generate_token_efficient_hint(
                 "2. IMPORTANT: Use compact=False to get EXACT verbatim content (default compact=True strips comments/whitespace)",
                 "3. Compare output character-by-character with your match_text (check tabs vs spaces, trailing whitespace)",
                 "4. Copy the EXACT text from read_files output as your new match_text",
-                "5. Retry propose_and_review with corrected match_text"
+                "5. Retry edit_files with corrected match_text"
             ]
         else:
             result['hint'] = (
@@ -215,7 +218,7 @@ def generate_token_efficient_hint(
                 "2. IMPORTANT: Use compact=False to get EXACT verbatim content (default compact=True strips comments/whitespace)",
                 "3. Verify this is the correct code section you intended to edit",
                 "4. Copy the EXACT text from read_files output as your new match_text",
-                "5. Retry propose_and_review with corrected match_text"
+                "5. Retry edit_files with corrected match_text"
             ]
     else:
         # Strategy 2: Provide file outline when no fuzzy matches found
@@ -234,7 +237,7 @@ def generate_token_efficient_hint(
                     f"1. Call grep_content with pattern='{grep_keywords[0]}', compact=False to locate the code with section hints",
                     "2. Note the line numbers from grep results",
                     f"3. Call read_files with path='{file_path}', line range from grep, and compact=False for verbatim content",
-                    "4. Copy the EXACT text and retry propose_and_review"
+                    "4. Copy the EXACT text and retry edit_files"
                 ]
             else:
                 result['hint'] = (
@@ -245,7 +248,7 @@ def generate_token_efficient_hint(
                     "1. Review the 'outline' to identify which function/class contains your target",
                     "2. Call grep_content with a distinctive keyword from your match_text (use compact=False for section hints)",
                     f"3. Call read_files with path='{file_path}', line range, and compact=False for verbatim content",
-                    "4. Copy the EXACT text and retry propose_and_review"
+                    "4. Copy the EXACT text and retry edit_files"
                 ]
         else:
             result['hint'] = (
@@ -326,6 +329,256 @@ class RooStyleEditTool:
         return EditResult(success=True, message="Edit prepared.", original_content=original_content, new_content=new_content)
 
 
+def _normalize_edit_pairs(edits: Optional[list]) -> Optional[List[dict]]:
+    """Normalize EditPair objects/dicts to plain dicts for consistent handling."""
+    if not edits:
+        return None
+    if not isinstance(edits, list) or len(edits) == 0:
+        raise ValueError("'edits' must be a non-empty list.")
+
+    normalized = []
+    for pair in edits:
+        if hasattr(pair, 'model_dump'):  # Pydantic v2
+            normalized.append(pair.model_dump())
+        elif hasattr(pair, 'dict'):  # Pydantic v1
+            normalized.append(pair.dict())
+        elif isinstance(pair, dict):
+            normalized.append(pair)
+        else:
+            raise ValueError(f"Edit must be a dict or EditPair, got {type(pair)}")
+
+    for i, pair in enumerate(normalized):
+        if not isinstance(pair, dict) or 'match_text' not in pair or 'new_string' not in pair:
+            raise ValueError(f"Edit at index {i} must have 'match_text' and 'new_string' keys.")
+    return normalized
+
+
+def _validate_match_texts(
+    validate_path,
+    path: str,
+    edit_pairs: Optional[List[dict]],
+    match_text: str = "",
+    bypass_match_text_limit: bool = False,
+) -> tuple:
+    """Validate match_texts and convert sentinels. Returns (edit_pairs, match_text) after conversion."""
+    match_texts_to_validate = []
+    if edit_pairs:
+        match_texts_to_validate = [pair['match_text'] for pair in edit_pairs]
+    else:
+        match_texts_to_validate = [match_text]
+
+    for idx, mt_val in enumerate(match_texts_to_validate):
+        if mt_val == "" or (mt_val is not None and mt_val.strip() == ""):
+            p = validate_path(path)
+            if p.exists():
+                file_content = p.read_text(encoding='utf-8')
+                if file_content.strip() != "":
+                    error_msg = (
+                        "ERROR: match_text is empty but file has content. "
+                        "You MUST provide the exact text you want to replace. "
+                        "Use read_files or grep_content first to get the current content, then provide "
+                        "the EXACT lines you want to change in match_text. "
+                        f"For intentional full-file overwrites, pass match_text='{OVERWRITE_SENTINEL}'."
+                    )
+                    if edit_pairs:
+                        error_msg = f"Edit {idx}: {error_msg}"
+                    raise ValueError(error_msg)
+        elif mt_val == OVERWRITE_SENTINEL:
+            if edit_pairs:
+                edit_pairs[idx]['match_text'] = ""
+            else:
+                match_text = ""
+        elif mt_val == APPEND_SENTINEL:
+            p = validate_path(path)
+            if not p.exists():
+                raise ValueError(f"File must exist for {APPEND_SENTINEL}.")
+
+    for idx, mt_val in enumerate(match_texts_to_validate):
+        if mt_val and mt_val not in [OVERWRITE_SENTINEL, APPEND_SENTINEL] and len(mt_val) > MATCH_TEXT_MAX_LENGTH:
+            if bypass_match_text_limit:
+                continue
+            error_msg = (
+                f"ERROR: match_text is too long (over {MATCH_TEXT_MAX_LENGTH} characters). "
+                "RECOMMENDED: Break your change into multiple smaller edits using the 'edits' parameter, "
+                f"each match_text under {MATCH_TEXT_MAX_LENGTH} chars. "
+                "LAST RESORT: If you genuinely need to replace a large contiguous section (e.g., updating a large markdown block), "
+                "set bypass_match_text_limit=True to override this limit."
+            )
+            if edit_pairs:
+                error_msg = f"Edit {idx}: {error_msg}"
+            raise ValueError(error_msg)
+
+    return edit_pairs, match_text
+
+
+def _apply_edits_to_content(
+    tool: 'RooStyleEditTool',
+    content: str,
+    edit_pairs: List[dict],
+    path: str,
+    error_context_prefix: str = "",
+) -> str:
+    """Apply a list of edits to content string. Returns modified content. Raises ValueError on failure."""
+    normalized = tool.normalize_line_endings(content)
+
+    for i, pair in enumerate(edit_pairs):
+        mt = tool.normalize_line_endings(pair['match_text'])
+        new_s = pair['new_string']
+        if mt == APPEND_SENTINEL:
+            normalized += new_s
+            continue
+        if mt:
+            occurrences = tool.count_occurrences(normalized, mt)
+            if occurrences == 0:
+                error_response = {
+                    "error": True,
+                    "error_type": "validation_error",
+                    "message": f"Edit {i}: No match found for 'match_text'.",
+                }
+                hint_info = generate_token_efficient_hint(mt, content, path, f" ({error_context_prefix}edit {i})")
+                error_response.update(hint_info)
+                raise ValueError(json.dumps(error_response, indent=2))
+            if occurrences != 1:
+                error_response = {
+                    "error": True,
+                    "error_type": "validation_error",
+                    "message": f"Edit {i}: Expected 1 occurrence but found {occurrences}. Provide more context in match_text to ensure uniqueness.",
+                }
+                hint_info = generate_token_efficient_hint(mt, content, path, f" ({error_context_prefix}edit {i})")
+                error_response.update(hint_info)
+                raise ValueError(json.dumps(error_response, indent=2))
+            normalized = normalized.replace(mt, new_s, 1)
+        else:
+            # Empty match_text in a multi-edit means full rewrite (only valid as sole edit)
+            if len(edit_pairs) > 1:
+                raise ValueError("Edit with empty match_text (full rewrite) cannot be combined with other edits.")
+            normalized = new_s
+
+    return normalized
+
+
+def _is_binary_file(path: Path) -> bool:
+    """Check if file is binary by looking for null bytes in first 8KB."""
+    try:
+        with open(path, 'rb') as f:
+            chunk = f.read(8192)
+            return b'\x00' in chunk
+    except Exception:
+        return False
+
+
+def _atomic_write(path: Path, content: str, encoding: str = 'utf-8') -> None:
+    """Write content atomically via temp file + rename. Prevents corruption on disk-full/crash."""
+    fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w', encoding=encoding) as f:
+            f.write(content)
+        os.replace(tmp_path, path)
+    except Exception:
+        # Clean up temp file on failure, original file preserved
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _preserve_trailing_newline(original: str, edited: str) -> str:
+    """Preserve original file's trailing newline style in edited content."""
+    if original.endswith('\n') and not edited.endswith('\n'):
+        return edited + '\n'
+    if not original.endswith('\n') and edited.endswith('\n'):
+        return edited.rstrip('\n')
+    return edited
+
+
+def apply_file_edits(
+    validate_path,
+    path: str,
+    edits: List[dict],
+) -> dict:
+    """Apply edits to a single file. Returns result dict with status. No sessions, no review.
+
+    Returns:
+        {"status": "ok", "edits_applied": N} on success
+        {"status": "created"} for new file creation
+        {"status": "error", "error": "...", ...hints...} on failure
+    """
+    tool = RooStyleEditTool(validate_path)
+    edit_pairs = _normalize_edit_pairs(edits)
+    if not edit_pairs:
+        return {"status": "error", "error": "No edits provided."}
+
+    # Validate new_string sizes
+    for i, pair in enumerate(edit_pairs):
+        if len(pair.get('new_string', '')) > NEW_STRING_MAX_LENGTH:
+            return {"status": "error", "error": f"Edit {i}: new_string too large ({len(pair['new_string'])} chars, max {NEW_STRING_MAX_LENGTH})."}
+
+    try:
+        edit_pairs, _ = _validate_match_texts(validate_path, path, edit_pairs)
+    except ValueError as e:
+        error_str = str(e)
+        try:
+            return {"status": "error", **json.loads(error_str)}
+        except json.JSONDecodeError:
+            return {"status": "error", "error": error_str}
+
+    p = validate_path(path)
+
+    # Determine if this is a new file creation
+    is_new_file = not p.exists() and len(edit_pairs) == 1 and edit_pairs[0]['match_text'] == ""
+    if is_new_file:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        content = edit_pairs[0]['new_string']
+        try:
+            _atomic_write(p, content)
+        except PermissionError as e:
+            return {"status": "error", "error": f"Permission denied: {e}"}
+        except OSError as e:
+            return {"status": "error", "error": f"Write failed: {e}"}
+        return {"status": "created"}
+
+    if not p.exists():
+        return {"status": "error", "error": f"File not found: {path}"}
+
+    # Safety: reject binary files
+    if _is_binary_file(p):
+        return {"status": "error", "error": f"Cannot edit binary file: {path}. Use write_file for binary content."}
+
+    # Safety: reject very large files
+    file_size = p.stat().st_size
+    if file_size > MAX_FILE_SIZE:
+        return {"status": "error", "error": f"File too large ({file_size} bytes, max {MAX_FILE_SIZE}). Split edits or use write_file."}
+
+    original_content = p.read_text(encoding='utf-8')
+
+    try:
+        new_content = _apply_edits_to_content(tool, original_content, edit_pairs, path)
+    except ValueError as e:
+        error_str = str(e)
+        try:
+            return {"status": "error", **json.loads(error_str)}
+        except json.JSONDecodeError:
+            return {"status": "error", "error": error_str}
+
+    # Preserve original trailing newline style
+    final_content = _preserve_trailing_newline(original_content, new_content)
+
+    # Skip write if content unchanged (no-op detection)
+    if final_content == original_content:
+        return {"status": "ok", "edits_applied": 0, "note": "No changes detected."}
+
+    # Atomic write: temp file + rename prevents corruption on disk-full/crash
+    try:
+        _atomic_write(p, final_content)
+    except PermissionError as e:
+        return {"status": "error", "error": f"Permission denied: {e}"}
+    except OSError as e:
+        return {"status": "error", "error": f"Write failed (disk full?): {e}. Original file preserved."}
+
+    return {"status": "ok", "edits_applied": len(edit_pairs)}
+
+
 async def propose_and_review_logic(
     validate_path,
     IS_VSCODE_CLI_AVAILABLE,
@@ -339,90 +592,12 @@ async def propose_and_review_logic(
     dangerous_skip_permissions: bool = False,
 ) -> str:
     # --- Validate multi-edit parameter ---
-    edit_pairs = None
-    if edits:
-        if not isinstance(edits, list) or len(edits) == 0:
-            raise ValueError("'edits' must be a non-empty list.")
-
-        # Normalize EditPair objects to dicts for consistent handling
-        normalized_edits = []
-        for pair in edits:
-            if hasattr(pair, 'model_dump'):  # Pydantic v2
-                normalized_edits.append(pair.model_dump())
-            elif hasattr(pair, 'dict'):  # Pydantic v1
-                normalized_edits.append(pair.dict())
-            elif isinstance(pair, dict):
-                normalized_edits.append(pair)
-            else:
-                raise ValueError(f"Edit must be a dict or EditPair, got {type(pair)}")
-        edits = normalized_edits
-
-        for i, pair in enumerate(edits):
-            if not isinstance(pair, dict) or 'match_text' not in pair or 'new_string' not in pair:
-                raise ValueError(f"Edit at index {i} must have 'match_text' and 'new_string' keys.")
-        edit_pairs = edits
+    edit_pairs = _normalize_edit_pairs(edits)
 
     # --- Validation: Prevent accidental file overwrite ---
-    # If match_text is blank but file has content, require explicit OVERWRITE_FILE sentinel
-    # Note: OVERWRITE_SENTINEL and MATCH_TEXT_MAX_LENGTH are module-level constants
-
-    # Get all match_texts to validate (from edits or single match_text)
-    match_texts_to_validate = []
-    if edit_pairs:
-        match_texts_to_validate = [pair['match_text'] for pair in edit_pairs]
-    else:
-        match_texts_to_validate = [match_text]
-
-    # Check for blank match_text on non-blank files
-    for idx, mt_val in enumerate(match_texts_to_validate):
-        if mt_val == "" or (mt_val is not None and mt_val.strip() == ""):
-            # match_text is blank - check if file exists and has content
-            p = validate_path(path)
-            if p.exists():
-                file_content = p.read_text(encoding='utf-8')
-                if file_content.strip() != "":
-                    # File is not blank - reject unless user explicitly wants to overwrite
-                    error_msg = (
-                        "ERROR: match_text is empty but file has content. "
-                        "You MUST provide the exact text you want to replace. "
-                        "Use read_files or grep_content first to get the current content, then provide "
-                        "the EXACT lines you want to change in match_text. "
-                        f"For intentional full-file overwrites, pass match_text='{OVERWRITE_SENTINEL}'."
-                    )
-                    if edit_pairs:
-                        error_msg = f"Edit {idx}: {error_msg}"
-                    raise ValueError(error_msg)
-        elif mt_val == OVERWRITE_SENTINEL:
-            # User explicitly wants to overwrite - convert sentinel to empty string for processing
-            if edit_pairs:
-                edit_pairs[idx]['match_text'] = ""
-            else:
-                match_text = ""
-        elif mt_val == APPEND_SENTINEL:
-            # User explicitly wants to append - ensure file exists
-            p = validate_path(path)
-            if not p.exists():
-                raise ValueError(f"File must exist for {APPEND_SENTINEL}.")
-
-    # Check for match_text that is too long (>2000 characters)
-    # Can be bypassed with bypass_match_text_limit=True for legitimate large section edits
-    for idx, mt_val in enumerate(match_texts_to_validate):
-        if mt_val and mt_val not in [OVERWRITE_SENTINEL, APPEND_SENTINEL] and len(mt_val) > MATCH_TEXT_MAX_LENGTH:
-            if bypass_match_text_limit:
-                # User has explicitly opted to bypass the limit - this is a last resort
-                # Log a warning but allow the operation to proceed
-                continue
-            error_msg = (
-                f"ERROR: match_text is too long (over {MATCH_TEXT_MAX_LENGTH} characters). "
-                "RECOMMENDED: Break your change into multiple smaller edits using the 'edits' parameter, "
-                f"each match_text under {MATCH_TEXT_MAX_LENGTH} chars. "
-                "LAST RESORT: If you genuinely need to replace a large contiguous section (e.g., updating a large markdown block), "
-                "set bypass_match_text_limit=True to override this limit."
-            )
-            if edit_pairs:
-                error_msg = f"Edit {idx}: {error_msg}"
-            raise ValueError(error_msg)
-
+    edit_pairs, match_text = _validate_match_texts(
+        validate_path, path, edit_pairs, match_text, bypass_match_text_limit
+    )
 
     tool = RooStyleEditTool(validate_path)
     original_path_obj = Path(path)

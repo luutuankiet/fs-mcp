@@ -22,7 +22,7 @@ import threading
 import duckdb
 import math
 
-from .edit_tool import EditResult, RooStyleEditTool, propose_and_review_logic, MATCH_TEXT_MAX_LENGTH
+from .edit_tool import EditResult, RooStyleEditTool, propose_and_review_logic, apply_file_edits, MATCH_TEXT_MAX_LENGTH
 from .utils import check_ripgrep, check_jq, check_yq, check_rtk, check_required_dependencies
 from .gsd_lite_analyzer import analyze_gsd_logs
 from .gemini_compat import make_gemini_compatible
@@ -100,6 +100,21 @@ class EditPair(BaseModel):
     """A single edit operation for batch editing. Provide the exact text to find (match_text) and its replacement (new_string)."""
     match_text: str = Field(description=EDIT_PAIR_MATCH_TEXT_DESCRIPTION)
     new_string: str = Field(description="The replacement text that will replace match_text.")
+
+
+# --- edit_files models (token-efficient) ---
+EDIT_MATCH_DESCRIPTION = f"""Exact text to find (literal, not regex). Whitespace matters. Max {MATCH_TEXT_MAX_LENGTH} chars.
+Special: ""=new file, "OVERWRITE_FILE"=replace all, "APPEND_TO_FILE"=append."""
+
+class Edit(BaseModel):
+    """Single find-and-replace."""
+    match_text: str = Field(description=EDIT_MATCH_DESCRIPTION)
+    new_string: str = Field(description="Replacement text.")
+
+class FileEdit(BaseModel):
+    """Edits for one file."""
+    path: str = Field(description="File path. Prefer relative paths.")
+    edits: List[Edit] = Field(description="Ordered find-and-replace operations.")
 
 
 # --- Global Configuration ---
@@ -339,8 +354,7 @@ CORE_TOOLS = {
     "read_files",
     "create_directory",
     "directory_tree",
-    "propose_and_review",
-    "commit_review",
+    "edit_files",
     "grep_content",
     "query_jq",
     "query_yq",
@@ -348,13 +362,17 @@ CORE_TOOLS = {
 }
 
 # Tools excluded from core tier (available with --all)
-# - write_file: use propose_and_review for safe editing
+# - write_file: use edit_files for safe editing
+# - propose_and_review: human-in-the-loop editing (use edit_files for direct writes)
+# - commit_review: only needed for propose_and_review review flow
 # - list_directory: use directory_tree or list_directory_with_sizes
 # - move_file: rarely needed, potentially destructive
-# - append_text: use propose_and_review for safe editing
+# - append_text: use edit_files for safe editing
 # - grounding_search: external dependency, not core filesystem operation
 EXCLUDED_FROM_CORE = {
     "write_file",
+    "propose_and_review",
+    "commit_review",
     "list_directory",
     "move_file",
     "append_text",
@@ -1200,6 +1218,65 @@ def directory_tree(
         return compact_output
 
     return json.dumps(tree, indent=2)
+
+
+# --- Direct File Editing Tool (Core) ---
+
+@mcp.tool()
+async def edit_files(
+    files: Annotated[
+        List[FileEdit],
+        Field(description="Files to edit. Each has a path and ordered list of edits.")
+    ],
+) -> str:
+    """Edit one or more files with find-and-replace. Writes directly.
+
+    USAGE:
+      edit_files(files=[{
+        "path": "src/main.py",
+        "edits": [{"match_text": "old", "new_string": "new"}]
+      }])
+
+    MULTI-FILE:
+      edit_files(files=[
+        {"path": "a.py", "edits": [{"match_text": "x", "new_string": "y"}]},
+        {"path": "b.py", "edits": [{"match_text": "a", "new_string": "b"}]}
+      ])
+
+    SPECIAL match_text VALUES:
+      ""               = Create new file (must not exist)
+      "OVERWRITE_FILE" = Replace entire file
+      "APPEND_TO_FILE" = Append to end
+
+    RULES:
+    - match_text is EXACT literal (not regex). Whitespace matters.
+    - Each match_text must appear exactly once.
+    - Edits apply in order per file. Files are independent.
+    - Errors include fuzzy match hints with line numbers.
+    - WORKFLOW: read_files -> copy exact text -> paste as match_text.
+    """
+    results = []
+    all_success = True
+
+    for file_edit in files:
+        edits_dicts = [e.model_dump() for e in file_edit.edits]
+        result = apply_file_edits(validate_path, file_edit.path, edits_dicts)
+        result["path"] = file_edit.path
+        if result["status"] == "error":
+            all_success = False
+        results.append(result)
+
+        # Auto-dump GSD artifacts on successful write
+        if result["status"] in ("ok", "created"):
+            try:
+                committed_path = validate_path(file_edit.path)
+                if _is_gsd_artifact(committed_path):
+                    _trigger_gsd_dump(committed_path)
+            except Exception:
+                pass
+
+    response = {"success": all_success, "files": results}
+    return json.dumps(response, indent=2)
 
 
 # --- Interactive Human-in-the-Loop Tools ---

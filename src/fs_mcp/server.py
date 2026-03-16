@@ -1245,7 +1245,7 @@ def directory_tree(
         return f"{header}\n{compact_output}"
 
     tree_with_context = {"path_context": str(root), "allowed_dirs": [str(d) for d in USER_ACCESSIBLE_DIRS], "tree": tree}
-    return json.dumps(tree_with_context, indent=2)
+    return json.dumps(tree_with_context, separators=(",", ":"))
 
 
 # --- Direct File Editing Tool (Core) ---

@@ -1189,6 +1189,15 @@ def _render_compact_tree(node: Optional[Dict[str, object]]) -> str:
     return "\n".join(walk(node, "", True, True)) + "\n"
 
 
+def _path_context_header(root: Path) -> str:
+    """Build a path context header showing the absolute root and allowed directories."""
+    lines = [f"[path_context: {root}]"]
+    if len(USER_ACCESSIBLE_DIRS) > 1:
+        dirs_str = ", ".join(str(d) for d in USER_ACCESSIBLE_DIRS)
+        lines.append(f"[allowed_dirs: {dirs_str}]")
+    return "\n".join(lines)
+
+
 @mcp.tool()
 def directory_tree(
     path: str,
@@ -1196,8 +1205,26 @@ def directory_tree(
     exclude_dirs: Optional[List[str]] = None,
     compact: bool = True,
 ) -> str:
-    """Get recursive tree. compact=True returns token-efficient text tree; compact=False returns JSON tree."""
+    """Get a recursive directory tree with path context for multi-server disambiguation.
+
+    Output always includes `path_context` — the absolute resolved path of the listed
+    directory. Use this to anchor relative path construction, especially when working
+    with multiple fs-mcp server instances mounted on different directories or machines.
+
+    When multiple allowed directories are configured, `allowed_dirs` is also included
+    to show the full scope of directories this server can access.
+
+    compact=True (default): token-efficient text tree with header lines:
+        [path_context: /absolute/path/to/dir]
+        dir/
+        |-- src/
+        |-- README.md
+
+    compact=False: JSON object with top-level keys:
+        {"path_context": "/absolute/path/to/dir", "allowed_dirs": [...], "tree": {...}}
+    """
     root = validate_path(path)
+    header = _path_context_header(root)
 
     default_excludes = [".git", ".venv", "__pycache__", "node_modules", ".pytest_cache"]
     excluded = exclude_dirs if exclude_dirs is not None else default_excludes
@@ -1207,17 +1234,18 @@ def directory_tree(
     if compact:
         rtk_output, rtk_error = _rtk_tree(str(root), max_depth, excluded)
         if rtk_output is not None:
-            return rtk_output
+            return f"{header}\n{rtk_output}"
 
     tree = _build_directory_tree_node(root, 0, max_depth, excluded)
 
     if compact:
         compact_output = _render_compact_tree(tree)
         if rtk_error:
-            return f"[{rtk_error}; using built-in compact tree]\n{compact_output}"
-        return compact_output
+            return f"{header}\n[{rtk_error}; using built-in compact tree]\n{compact_output}"
+        return f"{header}\n{compact_output}"
 
-    return json.dumps(tree, indent=2)
+    tree_with_context = {"path_context": str(root), "allowed_dirs": [str(d) for d in USER_ACCESSIBLE_DIRS], "tree": tree}
+    return json.dumps(tree_with_context, indent=2)
 
 
 # --- Direct File Editing Tool (Core) ---

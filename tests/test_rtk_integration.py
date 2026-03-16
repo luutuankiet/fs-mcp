@@ -298,10 +298,11 @@ class TestDirectoryTreeCompact:
             result = server.directory_tree.fn(path=str(project_dir), compact=True)
 
             mock_tree.assert_called_once()
-            assert result == "project/\n\\-- src/\n"
+            assert "[path_context:" in result
+            assert "project/\n\\-- src/\n" in result
 
     def test_directory_tree_compact_false_returns_json(self, temp_env):
-        """compact=False should preserve the original JSON tree output."""
+        """compact=False should return JSON with path_context and tree keys."""
         project_dir = temp_env / "project"
         project_dir.mkdir()
         (project_dir / "src").mkdir()
@@ -311,10 +312,14 @@ class TestDirectoryTreeCompact:
             result = server.directory_tree.fn(path=str(project_dir), compact=False)
 
             mock_tree.assert_not_called()
-            assert result.strip().startswith("{")
-            assert '"name": "project"' in result
-            assert '"type": "directory"' in result
-            assert '"children"' in result
+            import json
+            parsed = json.loads(result)
+            assert "path_context" in parsed
+            assert "allowed_dirs" in parsed
+            assert "tree" in parsed
+            assert parsed["tree"]["name"] == "project"
+            assert parsed["tree"]["type"] == "directory"
+            assert "children" in parsed["tree"]
 
     def test_directory_tree_compact_rtk_failure_fallback(self, temp_env):
         """compact=True falls back to built-in compact tree if RTK fails."""
@@ -329,6 +334,7 @@ class TestDirectoryTreeCompact:
             result = server.directory_tree.fn(path=str(project_dir), compact=True)
 
             mock_tree.assert_called_once()
+            assert "[path_context:" in result
             assert "using built-in compact tree" in result
             assert "project/" in result
             assert "src/" in result

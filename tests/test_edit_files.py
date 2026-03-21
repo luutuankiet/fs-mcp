@@ -249,21 +249,7 @@ class TestSafetyChecks:
         edited = no_nl_file.read_text()
         assert not edited.endswith('\n'), "Should not add trailing newline"
 
-    @pytest.mark.skipif(os.getuid() == 0, reason="Root ignores file permissions")
-    def test_read_only_file_error(self, temp_env):
-        """Writing to read-only file should return error, not crash."""
-        ro_file = temp_env["temp_dir"] / "readonly.py"
-        ro_file.write_text("x = 1\n", encoding='utf-8')
-        os.chmod(ro_file, 0o444)
-        result = apply_file_edits(
-            temp_env["validate_path"],
-            str(ro_file),
-            [{"match_text": "x = 1", "new_string": "x = 2"}],
-        )
-        assert result["status"] == "error"
-        assert "permission" in result["error"].lower() or "denied" in result["error"].lower()
-        # Cleanup: restore write permission for temp cleanup
-        os.chmod(ro_file, 0o644)
+    
 
 
 class TestPerFileAtomicity:

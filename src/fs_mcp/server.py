@@ -302,7 +302,7 @@ def _trigger_gsd_dump(path_obj: Path):
                 "work": work_content,
                 "project": project_content,
                 "architecture": arch_content,
-                "base_path": gsd_dir.name,
+                "base_path": str(gsd_dir),
             }).encode("utf-8")
 
             # Build request with optional basic auth

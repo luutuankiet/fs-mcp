@@ -127,6 +127,46 @@ IS_RIPGREP_AVAILABLE = False
 IS_JQ_AVAILABLE = False
 IS_YQ_AVAILABLE = False
 IS_RTK_AVAILABLE = False
+LOGIN_ENV: Optional[dict] = None  # Populated at initialize() time; passed to run_command subprocess
+
+
+def _capture_login_env() -> dict:
+    """Capture the user's full login shell environment.
+
+    Spawns "$SHELL -l -c env" so nvm, pyenv, cargo, pnpm, etc. are all present.
+    Falls back to the current process environment if the shell call fails.
+    """
+    shell = os.environ.get("SHELL", "/bin/bash")
+    try:
+        result = subprocess.run(
+            [shell, "-l", "-c", "env"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            env: dict = {}
+            for line in result.stdout.splitlines():
+                if "=" in line:
+                    key, _, value = line.partition("=")
+                    env[key] = value
+            if env:
+                return env
+        print(
+            f"[fs-mcp] Warning: '{shell} -l -c env' exited {result.returncode}, "
+            "falling back to process environment.",
+            file=sys.stderr,
+            flush=True,
+        )
+    except Exception as exc:
+        print(
+            f"[fs-mcp] Warning: failed to capture login env ({exc}), "
+            "falling back to process environment.",
+            file=sys.stderr,
+            flush=True,
+        )
+    return dict(os.environ)
+
 
 # --- RTK (Rust Token Killer) Integration ---
 RTK_TIMEOUT_SECONDS = 30
@@ -415,10 +455,14 @@ def initialize(directories: List[str], use_all_tools: bool = False):
         directories: List of allowed directory paths
         use_all_tools: If False (default), expose only CORE_TOOLS. If True, expose all tools.
     """
-    global ALLOWED_DIRS, USER_ACCESSIBLE_DIRS, IS_VSCODE_CLI_AVAILABLE, IS_RIPGREP_AVAILABLE, IS_JQ_AVAILABLE, IS_YQ_AVAILABLE
+    global ALLOWED_DIRS, USER_ACCESSIBLE_DIRS, IS_VSCODE_CLI_AVAILABLE, IS_RIPGREP_AVAILABLE, IS_JQ_AVAILABLE, IS_YQ_AVAILABLE, LOGIN_ENV
     ALLOWED_DIRS.clear()
     USER_ACCESSIBLE_DIRS.clear()
-    
+
+    # Capture the user's login shell environment once so run_command inherits
+    # nvm, pyenv, pnpm, cargo, etc. (fixes bare-PATH bug when server starts via systemd/supervisor)
+    LOGIN_ENV = _capture_login_env()
+
     # Check required dependencies (exits with instructions if missing)
     check_required_dependencies()
     
@@ -2158,10 +2202,12 @@ async def run_command(
     timeout = min(max(timeout, 1), 600)  # 1s to 10min
 
     try:
+        _shell = os.environ.get("SHELL", "/bin/bash")
         result = subprocess.run(
             command,
             shell=True,
-            executable="/bin/bash",
+            executable=_shell,
+            env=LOGIN_ENV,  # full login env: nvm, pyenv, pnpm, cargo, etc.
             capture_output=True,
             text=True,
             timeout=timeout,

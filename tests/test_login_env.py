@@ -117,12 +117,65 @@ def test_capture_login_env_no_duplicate_path_entries(tmp_path, monkeypatch):
 def test_capture_login_env_skips_nonexistent_dirs(tmp_path, monkeypatch):
     """Dirs that don't exist on disk must not appear in PATH."""
     monkeypatch.setattr(server, "_VERSION_MANAGER_BIN_DIRS", ["{home}/.nonexistent/bin"])
+    monkeypatch.setattr(server, "_SYSTEM_BIN_DIRS", [])  # isolate
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("PATH", "/usr/bin")
 
     env = server._capture_login_env()
 
     assert str(tmp_path / ".nonexistent" / "bin") not in env["PATH"]
+
+
+# ---------------------------------------------------------------------------
+# 4b. _capture_login_env — system dirs appended (layer 2)
+# ---------------------------------------------------------------------------
+
+def test_capture_login_env_appends_system_dirs(tmp_path, monkeypatch):
+    """System dirs not in PATH are appended (lower priority than version managers)."""
+    sys_bin = tmp_path / "usr" / "local" / "bin"
+    sys_bin.mkdir(parents=True)
+
+    monkeypatch.setattr(server, "_VERSION_MANAGER_BIN_DIRS", [])  # isolate
+    monkeypatch.setattr(server, "_SYSTEM_BIN_DIRS", [str(sys_bin)])
+    monkeypatch.setenv("PATH", "/existing/bin")
+
+    env = server._capture_login_env()
+
+    path_dirs = env["PATH"].split(":")
+    assert str(sys_bin) in path_dirs
+    # System dir must come AFTER existing PATH entries (appended)
+    assert path_dirs.index(str(sys_bin)) > path_dirs.index("/existing/bin")
+
+
+def test_capture_login_env_version_manager_before_system_dirs(tmp_path, monkeypatch):
+    """Version manager dirs (layer 1) must come before system dirs (layer 2)."""
+    vm_bin = tmp_path / ".cargo" / "bin"
+    vm_bin.mkdir(parents=True)
+    sys_bin = tmp_path / "usr" / "local" / "bin"
+    sys_bin.mkdir(parents=True)
+
+    monkeypatch.setattr(server, "_VERSION_MANAGER_BIN_DIRS", ["{home}/.cargo/bin"])
+    monkeypatch.setattr(server, "_SYSTEM_BIN_DIRS", [str(sys_bin)])
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    env = server._capture_login_env()
+
+    path_dirs = env["PATH"].split(":")
+    assert path_dirs.index(str(vm_bin)) < path_dirs.index("/usr/bin")   # prepended
+    assert path_dirs.index(str(sys_bin)) > path_dirs.index("/usr/bin")  # appended
+
+
+def test_system_bin_dirs_platform_aware():
+    """_SYSTEM_BIN_DIRS should contain platform-appropriate paths."""
+    import platform
+    dirs = server._SYSTEM_BIN_DIRS
+    assert isinstance(dirs, list)
+    assert len(dirs) > 0
+    if platform.system() == "Darwin":
+        assert any("homebrew" in d or "opt" in d for d in dirs)
+    else:
+        assert any("bin" in d for d in dirs)
 
 
 # ---------------------------------------------------------------------------

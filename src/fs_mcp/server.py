@@ -151,10 +151,38 @@ def _get_user_shell() -> str:
     return "/bin/bash"
 
 
+import platform as _platform
+
+# Standard system PATH dirs that should always be present as a baseline.
+# These are appended (low priority) — they're fallbacks if the parent process
+# launched with a stripped environment (systemd, Electron apps, etc.).
+# Platform-aware: macOS gets Homebrew paths, Linux gets linuxbrew + snap.
+_SYSTEM_BIN_DIRS: list[str] = [
+    "/usr/local/bin",
+    "/usr/local/sbin",
+    "/usr/bin",
+    "/usr/sbin",
+    "/bin",
+    "/sbin",
+    *(
+        [
+            "/opt/homebrew/bin",       # Homebrew, Apple Silicon
+            "/opt/homebrew/sbin",
+            "/usr/local/opt",          # Homebrew cellar links, Intel
+        ]
+        if _platform.system() == "Darwin"
+        else [
+            "/home/linuxbrew/.linuxbrew/bin",   # Homebrew on Linux
+            "/home/linuxbrew/.linuxbrew/sbin",
+            "/snap/bin",
+        ]
+    ),
+]
+
 # Well-known binary directories for common version managers and language runtimes.
-# Checked at initialize() time; any that exist are prepended to PATH.
-# This approach is shell-agnostic — no rc file parsing, no subprocess, no assumptions
-# about whether the user uses bash/zsh/fish or how the parent process was launched.
+# Checked at initialize() time; any that exist are prepended to PATH (high priority
+# — version manager installs should win over system-level ones).
+# Shell-agnostic: no rc file parsing, no subprocess, works for bash/zsh/fish/nushell.
 _VERSION_MANAGER_BIN_DIRS = [
     # nvm
     "{home}/.nvm/versions/node/*/bin",
@@ -193,13 +221,19 @@ _VERSION_MANAGER_BIN_DIRS = [
 
 
 def _capture_login_env() -> dict:
-    """Build a login-equivalent environment by probing well-known version manager paths.
+    """Build a login-equivalent environment using a two-layer hybrid PATH strategy.
 
-    Shell-agnostic: scans _VERSION_MANAGER_BIN_DIRS for directories that exist and
-    glob-expands wildcards (e.g. nvm's per-version node paths). Found dirs are
-    prepended to PATH in order. Works regardless of how the server was launched
-    (terminal, Claude Desktop, VS Code, systemd, etc.) and regardless of shell
-    (bash, zsh, fish, nushell...).
+    Layer 1 — version manager dirs (PREPEND, high priority):
+        Glob-probes _VERSION_MANAGER_BIN_DIRS (nvm, pyenv, cargo, volta, etc.).
+        Prepended so user-managed installs win over system ones.
+
+    Layer 2 — standard system dirs (APPEND, low priority):
+        Ensures _SYSTEM_BIN_DIRS (/usr/local/bin, /opt/homebrew/bin on macOS, etc.)
+        are always present as a baseline, even when the parent process (Electron,
+        systemd) launched with a stripped PATH.
+
+    Shell-agnostic: no subprocess, no rc file parsing, works for bash/zsh/fish/nushell.
+    Platform-aware: macOS gets Homebrew paths, Linux gets linuxbrew + snap.
     """
     import glob
     home = str(Path.home())
@@ -207,20 +241,28 @@ def _capture_login_env() -> dict:
     current_path_dirs = current_env.get("PATH", "").split(":")
     current_path_set = set(current_path_dirs)
 
-    extra_dirs: list[str] = []
+    # --- Layer 1: prepend version manager dirs (highest priority) ---
+    prepend_dirs: list[str] = []
     for pattern in _VERSION_MANAGER_BIN_DIRS:
-        expanded_pattern = pattern.format(home=home)
-        # glob handles both literal paths and wildcard patterns (e.g. nvm's */bin)
-        for match in sorted(glob.glob(expanded_pattern), reverse=True):  # reverse=newest first
+        expanded = pattern.format(home=home)
+        for match in sorted(glob.glob(expanded), reverse=True):  # newest version first
             if os.path.isdir(match) and match not in current_path_set:
-                extra_dirs.append(match)
+                prepend_dirs.append(match)
                 current_path_set.add(match)
 
-    if extra_dirs:
-        new_path = ":".join(extra_dirs + current_path_dirs)
+    # --- Layer 2: append standard system dirs (lowest priority / baseline) ---
+    append_dirs: list[str] = []
+    for d in _SYSTEM_BIN_DIRS:
+        if os.path.isdir(d) and d not in current_path_set:
+            append_dirs.append(d)
+            current_path_set.add(d)
+
+    if prepend_dirs or append_dirs:
+        new_path = ":".join(prepend_dirs + current_path_dirs + append_dirs)
         current_env["PATH"] = new_path
         print(
-            f"[fs-mcp] Augmented PATH with {len(extra_dirs)} version manager dirs.",
+            f"[fs-mcp] PATH augmented: +{len(prepend_dirs)} version manager dirs (prepend), "
+            f"+{len(append_dirs)} system dirs (append).",
             file=sys.stderr,
             flush=True,
         )

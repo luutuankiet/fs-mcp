@@ -103,3 +103,79 @@ def test_edit_preserves_literal_escape_sequences(edit_tool, temp_src_dir):
     roundtripped = file_to_test.read_text(encoding='utf-8')
     assert roundtripped == 'line1\nprint("Hi\\nUniverse")\nline3\n'
 
+from fs_mcp.edit_tool import _try_fuzzy_recover, _apply_edits_to_content
+
+
+# --- Unicode Confusable Recovery Tests ---
+
+class TestFuzzyRecover:
+    """Tests for _try_fuzzy_recover: auto-recovery from Unicode confusables."""
+
+    def test_curly_quote_recovery(self):
+        """LLM sends curly quote, file has straight quote -> should recover."""
+        file_content = "The key UX element -- it's what teaches agents the workflow.\n"
+        # LLM produces curly right single quotation mark (U+2019)
+        match_text = "The key UX element -- it\u2019s what teaches agents the workflow."
+        result = _try_fuzzy_recover(match_text, file_content)
+        assert result is not None
+        assert "it's" in result  # straight quote
+        assert result in file_content  # must be exact file text
+
+    def test_smart_double_quotes_recovery(self):
+        """LLM sends smart double quotes, file has straight -> should recover."""
+        file_content = "She said \"hello world\" to everyone.\n"
+        # LLM produces left/right double quotation marks (U+201C, U+201D)
+        match_text = "She said \u201chello world\u201d to everyone."
+        result = _try_fuzzy_recover(match_text, file_content)
+        assert result is not None
+        assert result in file_content
+
+    def test_no_recovery_when_genuinely_different(self):
+        """When text is genuinely different, should NOT recover."""
+        file_content = "def calculate_total(items):\n    return sum(items)\n"
+        match_text = "def compute_sum(entries):\n    return sum(entries)"
+        result = _try_fuzzy_recover(match_text, file_content)
+        assert result is None
+
+    def test_ellipsis_recovery(self):
+        """LLM sends Unicode ellipsis, file has three dots -> should recover."""
+        file_content = "Loading... please wait\n"
+        match_text = "Loading\u2026 please wait"
+        result = _try_fuzzy_recover(match_text, file_content)
+        assert result is not None
+        assert result in file_content
+
+
+class TestFuzzyRecoverIntegration:
+    """Integration tests: fuzzy recovery through the full edit pipeline."""
+
+    def test_edit_succeeds_with_curly_quotes(self, edit_tool, temp_src_dir):
+        """Full edit_files pipeline should auto-recover from curly quotes."""
+        test_file = temp_src_dir / 'fs_mcp' / 'test_unicode.py'
+        test_file.write_text("# it's a test file\nx = 1\n", encoding='utf-8')
+
+        # Simulate LLM sending curly quote in match_text
+        result = edit_tool._prepare_edit(
+            file_path=str(test_file),
+            match_text="# it\u2019s a test file",
+            new_string="# it is a test file",
+            expected_replacements=1
+        )
+        assert result.success
+        assert "# it is a test file" in result.new_content
+
+    def test_batch_edit_succeeds_with_curly_quotes(self, edit_tool, temp_src_dir):
+        """Batch edits via _apply_edits_to_content should also auto-recover."""
+        content = "# it's a test\ndef foo():\n    pass\n"
+
+        result = _apply_edits_to_content(
+            tool=edit_tool,
+            content=content,
+            edit_pairs=[{
+                'match_text': "# it\u2019s a test",
+                'new_string': "# it is a test"
+            }],
+            path="test.py"
+        )
+        assert "# it is a test" in result
+        assert "def foo():" in result  # rest preserved

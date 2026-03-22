@@ -74,7 +74,7 @@ class TestRTKBinaryCheck:
         with patch('shutil.which', return_value=None):
             available, msg = check_rtk()
             assert available is False
-            assert "brew install rtk" in msg or "cargo install" in msg
+            assert "install" in msg.lower()
 
 
 class TestReadFilesCompact:

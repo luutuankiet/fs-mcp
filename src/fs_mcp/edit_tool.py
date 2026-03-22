@@ -266,6 +266,74 @@ def generate_token_efficient_hint(
     return result
 
 
+# --- Unicode Confusable Recovery ---
+# LLMs systematically produce typographic Unicode characters (curly quotes,
+# em-dashes, ellipsis) when reconstructing match_text from context, even though
+# the actual file contains ASCII equivalents. This causes 100%-similarity
+# match failures. Rather than maintaining a confusables map, we use the
+# existing fuzzy matching infrastructure: when similarity >= 99%, auto-recover
+# by substituting the actual file text for the LLM-generated match_text.
+FUZZY_AUTO_RECOVER_THRESHOLD = 0.99  # 99% similarity for fuzzy fallback
+
+# Unicode confusable normalization map: LLM-produced chars -> ASCII equivalents
+_CONFUSABLE_MAP = {
+    "‘": "'",   # LEFT SINGLE QUOTATION MARK
+    "’": "'",   # RIGHT SINGLE QUOTATION MARK
+    "“": '"',   # LEFT DOUBLE QUOTATION MARK
+    "”": '"',   # RIGHT DOUBLE QUOTATION MARK
+    "…": "...", # HORIZONTAL ELLIPSIS
+    "–": "-",   # EN DASH
+    "—": "--",  # EM DASH
+    " ": " ",   # NON-BREAKING SPACE
+    "‐": "-",   # HYPHEN
+    "‑": "-",   # NON-BREAKING HYPHEN
+    "‒": "-",   # FIGURE DASH
+    "‚": "'",   # SINGLE LOW-9 QUOTATION MARK
+    "„": '"',   # DOUBLE LOW-9 QUOTATION MARK
+    "′": "'",   # PRIME
+    "″": '"',   # DOUBLE PRIME
+}
+
+def _normalize_confusables(text: str) -> str:
+    """Replace known Unicode confusables with ASCII equivalents."""
+    for unicode_char, ascii_equiv in _CONFUSABLE_MAP.items():
+        text = text.replace(unicode_char, ascii_equiv)
+    return text
+
+
+def _try_fuzzy_recover(match_text: str, file_content: str) -> Optional[str]:
+    """Attempt to recover from a near-miss match caused by Unicode confusables.
+
+    Strategy:
+    1. Normalize Unicode confusables in match_text to ASCII equivalents.
+    2. If normalized text has exactly 1 occurrence in file_content -> return it.
+    3. Fallback: use fuzzy matching with a 90% threshold.
+
+    Returns the actual file text if recovery succeeds, None otherwise.
+    """
+    # Strategy 1: Deterministic confusable normalization
+    normalized = _normalize_confusables(match_text)
+    if normalized != match_text:  # only if normalization changed something
+        occurrences = file_content.count(normalized)
+        if occurrences == 1:
+            return normalized
+
+    # Strategy 2: Fuzzy matching fallback for other near-misses
+    suggestions = find_similar_blocks(match_text, file_content, cutoff=FUZZY_AUTO_RECOVER_THRESHOLD)
+    if not suggestions:
+        return None
+    best = suggestions[0]
+    if best["similarity"] < 99:
+        return None
+    # Extract the actual file text at the matched position
+    lines = file_content.split("\n")
+    actual_text = "\n".join(lines[best["line_start"] - 1 : best["line_end"]])
+    # Final sanity check: the actual text must exist exactly once in the file
+    if file_content.count(actual_text) != 1:
+        return None
+    return actual_text
+
+
 OVERWRITE_SENTINEL = "OVERWRITE_FILE"
 APPEND_SENTINEL = "APPEND_TO_FILE"
 
@@ -319,7 +387,13 @@ class RooStyleEditTool:
             else:
                 occurrences = self.count_occurrences(normalized_content, normalized_match)
                 if occurrences == 0:
-                    return EditResult(success=False, message="No match found for 'match_text'.", error_type="validation_error")
+                    # Try fuzzy recovery (Unicode confusables, etc.)
+                    recovered = _try_fuzzy_recover(normalized_match, normalized_content)
+                    if recovered is not None:
+                        normalized_match = recovered
+                        occurrences = 1  # recovery guarantees exactly 1
+                    else:
+                        return EditResult(success=False, message="No match found for 'match_text'.", error_type="validation_error")
                 if occurrences != expected_replacements:
                     return EditResult(success=False, message=f"Expected {expected_replacements} occurrences but found {occurrences}.", error_type="validation_error")
                 new_content = normalized_content.replace(normalized_match, new_string)
@@ -430,14 +504,20 @@ def _apply_edits_to_content(
         if mt:
             occurrences = tool.count_occurrences(normalized, mt)
             if occurrences == 0:
-                error_response = {
-                    "error": True,
-                    "error_type": "validation_error",
-                    "message": f"Edit {i}: No match found for 'match_text'.",
-                }
-                hint_info = generate_token_efficient_hint(mt, content, path, f" ({error_context_prefix}edit {i})")
-                error_response.update(hint_info)
-                raise ValueError(json.dumps(error_response, indent=2))
+                # Try fuzzy recovery (Unicode confusables, etc.)
+                recovered = _try_fuzzy_recover(mt, normalized)
+                if recovered is not None:
+                    mt = recovered
+                    occurrences = 1  # recovery guarantees exactly 1
+                else:
+                    error_response = {
+                        "error": True,
+                        "error_type": "validation_error",
+                        "message": f"Edit {i}: No match found for 'match_text'.",
+                    }
+                    hint_info = generate_token_efficient_hint(mt, content, path, f" ({error_context_prefix}edit {i})")
+                    error_response.update(hint_info)
+                    raise ValueError(json.dumps(error_response, indent=2))
             if occurrences != 1:
                 error_response = {
                     "error": True,
@@ -686,15 +766,21 @@ async def propose_and_review_logic(
                 if mt:
                     occurrences = tool.count_occurrences(normalized, mt)
                     if occurrences == 0:
-                        if temp_dir.exists(): shutil.rmtree(temp_dir)
-                        error_response = {
-                            "error": True,
-                            "error_type": "validation_error",
-                            "message": f"Edit {i}: No match found for 'match_text'.",
-                        }
-                        hint_info = generate_token_efficient_hint(mt, original_content, path, f" (edit {i})")
-                        error_response.update(hint_info)
-                        raise ValueError(json.dumps(error_response, indent=2))
+                        # Try fuzzy recovery (Unicode confusables, etc.)
+                        recovered = _try_fuzzy_recover(mt, normalized)
+                        if recovered is not None:
+                            mt = recovered
+                            occurrences = 1  # recovery guarantees exactly 1
+                        else:
+                            if temp_dir.exists(): shutil.rmtree(temp_dir)
+                            error_response = {
+                                "error": True,
+                                "error_type": "validation_error",
+                                "message": f"Edit {i}: No match found for 'match_text'.",
+                            }
+                            hint_info = generate_token_efficient_hint(mt, original_content, path, f" (edit {i})")
+                            error_response.update(hint_info)
+                            raise ValueError(json.dumps(error_response, indent=2))
                     if occurrences != 1:
                         if temp_dir.exists(): shutil.rmtree(temp_dir)
                         error_response = {

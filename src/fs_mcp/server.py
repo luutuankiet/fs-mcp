@@ -130,13 +130,36 @@ IS_RTK_AVAILABLE = False
 LOGIN_ENV: Optional[dict] = None  # Populated at initialize() time; passed to run_command subprocess
 
 
+def _get_user_shell() -> str:
+    """Resolve the current user's shell reliably, regardless of parent process env.
+
+    Resolution order:
+      1. $SHELL env var  — set when launched from a terminal
+      2. /etc/passwd entry (pwd.getpwuid) — works even when launched from a GUI
+         app or systemd service that strips the environment
+      3. /bin/bash — last-resort default
+    """
+    if shell := os.environ.get("SHELL"):
+        return shell
+    try:
+        import pwd
+        entry = pwd.getpwuid(os.getuid())
+        if entry.pw_shell:
+            return entry.pw_shell
+    except Exception:
+        pass
+    return "/bin/bash"
+
+
 def _capture_login_env() -> dict:
     """Capture the user's full login shell environment.
 
-    Spawns "$SHELL -l -c env" so nvm, pyenv, cargo, pnpm, etc. are all present.
+    Spawns "<user-shell> -l -c env" so nvm, pyenv, cargo, pnpm, etc. are all
+    present. Uses _get_user_shell() so it works even when the parent process
+    (Claude Desktop, VS Code, systemd, etc.) did not propagate $SHELL.
     Falls back to the current process environment if the shell call fails.
     """
-    shell = os.environ.get("SHELL", "/bin/bash")
+    shell = _get_user_shell()
     try:
         result = subprocess.run(
             [shell, "-l", "-c", "env"],
@@ -2202,7 +2225,7 @@ async def run_command(
     timeout = min(max(timeout, 1), 600)  # 1s to 10min
 
     try:
-        _shell = os.environ.get("SHELL", "/bin/bash")
+        _shell = _get_user_shell()  # env-independent: reads $SHELL then /etc/passwd
         result = subprocess.run(
             command,
             shell=True,

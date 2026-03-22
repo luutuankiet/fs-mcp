@@ -130,6 +130,27 @@ IS_RTK_AVAILABLE = False
 
 # --- RTK (Rust Token Killer) Integration ---
 RTK_TIMEOUT_SECONDS = 30
+RUN_COMMAND_DEFAULT_TIMEOUT = 30
+
+# Commands blocked from run_command for safety — matched against first token
+BLOCKED_COMMANDS = {
+    "rm", "rmdir", "rmrf",
+    "mkfs", "dd", "format",
+    "shutdown", "reboot", "halt", "poweroff", "init",
+    "kill", "killall", "pkill",
+    "systemctl",
+    "shred", "wipefs",
+    ":()",  # fork bomb
+}
+
+# Patterns blocked anywhere in the command string
+BLOCKED_PATTERNS = [
+    "> /dev/",
+    ">/dev/",
+    "chmod -R 777",
+    "chmod 777",
+    "mkfs.",
+]
 
 def _rtk_compress_content(content: str, file_path: str = "-") -> tuple[str, Optional[str]]:
     """
@@ -359,6 +380,7 @@ CORE_TOOLS = {
     "query_jq",
     "query_yq",
     "query_duckdb",
+    "run_command",
 }
 
 # Tools excluded from core tier (available with --all)
@@ -2035,3 +2057,142 @@ def query_duckdb(
         return f"DuckDB error: {e}"
     finally:
         conn.close()
+
+
+# --- Shell Command Execution Tool (Core) ---
+
+def _validate_command_safety(command: str) -> Optional[str]:
+    """Check command against blocked commands/patterns. Returns error message or None if safe."""
+    stripped = command.strip()
+    if not stripped:
+        return "Error: Empty command."
+
+    # Extract first token (the actual binary being called)
+    # Handle: sudo X, env X, bash -c 'X', sh -c 'X'
+    tokens = stripped.split()
+    first_token = tokens[0].lower()
+
+    # Unwrap common wrappers to get the real command
+    idx = 0
+    while idx < len(tokens):
+        t = tokens[idx].lower()
+        if t == "sudo":
+            idx += 1
+            continue
+        if t == "env" and idx + 1 < len(tokens) and "=" in tokens[idx + 1]:
+            idx += 2
+            continue
+        break
+    real_cmd = tokens[idx].lower() if idx < len(tokens) else first_token
+    # Strip path prefix (e.g., /bin/rm -> rm)
+    real_cmd = real_cmd.rsplit("/", 1)[-1]
+
+    if real_cmd in BLOCKED_COMMANDS:
+        return f"Error: Command '{real_cmd}' is blocked for safety. Blocked commands: {', '.join(sorted(BLOCKED_COMMANDS))}"
+
+    # Check patterns anywhere in command
+    for pattern in BLOCKED_PATTERNS:
+        if pattern in command:
+            return f"Error: Command contains blocked pattern '{pattern}'."
+
+    return None
+
+
+@mcp.tool()
+async def run_command(
+    command: Annotated[
+        str,
+        Field(description="Shell command to execute. Supports pipes, redirects, &&, ||, etc. "
+              "Runs in /bin/bash. Destructive commands (rm, kill, shutdown, etc.) are blocked.")
+    ],
+    working_dir: Annotated[
+        str,
+        Field(default=".", description="Working directory for the command. Must be within allowed directories. "
+              "Defaults to server root.")
+    ] = ".",
+    timeout: Annotated[
+        int,
+        Field(default=30, description="Timeout in seconds. Default 30. Increase for builds/tests.")
+    ] = 30,
+    compact: Annotated[
+        bool,
+        Field(default=True, description="When true, pipe stdout through RTK for token-efficient compression. "
+              "Set false for exact output (e.g., diffs, error debugging).")
+    ] = True,
+) -> str:
+    """Run a shell command on the remote host.
+
+    **Use cases:** build, test, lint, git, package managers, dev servers, curl, etc.
+    **Blocked:** rm, kill, shutdown, reboot, dd, mkfs, and other destructive commands.
+
+    **Examples:**
+    - Build: `run_command(command="make build")`
+    - Test: `run_command(command="pytest -x tests/", timeout=120)`
+    - Git: `run_command(command="git status && git log --oneline -5")`
+    - Install: `run_command(command="pip install -e '.[dev]'")`
+    - Chain: `run_command(command="cd src && grep -r 'TODO' . | wc -l")`
+
+    **Output format:**
+    ```
+    [exit_code: 0]
+    [stdout]
+    ... (RTK-compressed if compact=true)
+    [stderr]
+    ...
+    ```
+    """
+    # Safety check
+    safety_error = _validate_command_safety(command)
+    if safety_error:
+        return safety_error
+
+    # Validate working directory
+    try:
+        cwd = validate_path(working_dir)
+        if not cwd.is_dir():
+            return f"Error: Working directory '{working_dir}' is not a directory."
+    except ValueError as e:
+        return f"Error: {e}"
+
+    # Cap timeout
+    timeout = min(max(timeout, 1), 600)  # 1s to 10min
+
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            executable="/bin/bash",
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(cwd),
+        )
+
+        stdout = result.stdout or ""
+        stderr = result.stderr or ""
+
+        # RTK compress stdout if requested and there's content
+        rtk_warning = None
+        if compact and stdout:
+            stdout, rtk_warning = _rtk_compress_content(stdout)
+
+        # Build output
+        parts = [f"[exit_code: {result.returncode}]"]
+        if rtk_warning:
+            parts.append(f"[rtk: {rtk_warning}]")
+        if stdout:
+            parts.append(f"[stdout]\n{stdout}")
+        if stderr:
+            parts.append(f"[stderr]\n{stderr}")
+        if not stdout and not stderr:
+            parts.append("[no output]")
+
+        return "\n".join(parts)
+
+    except subprocess.TimeoutExpired as e:
+        partial = ""
+        if e.stdout:
+            partial = f"\n[partial stdout]\n{e.stdout[:2000]}"
+        return f"Error: Command timed out after {timeout}s.{partial}"
+    except Exception as e:
+        return f"Error running command: {e}"

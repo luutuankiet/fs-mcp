@@ -9,7 +9,7 @@ execution_complete
 </current_mode>
 
 <active_task>
-None — LOG-017 DuckDB query tool complete
+None — LOG-018 Unicode confusable fix complete + published
 </active_task>
 
 <parked_tasks>
@@ -38,6 +38,8 @@ fs-mcp should work seamlessly with all major AI providers (Claude, Gemini, GPT) 
 - LOG-016: directory_tree RTK Integration — Compact text output (default) with RTK tree; built-in text fallback; JSON opt-out
 - LOG-017: DuckDB Query Tool — New `query_duckdb` core tool; `duckdb>=1.0.0` required dep; JSON array output (proxy-safe); multi-statement SQL blocked; 35/37 stress tests passed
 - LOG-017: Design — In-process Python library (no subprocess), ephemeral `:memory:` per call, agent controls LIMIT, proxy handles pagination via `read_cache`
+- LOG-018: Unicode Confusable Fix — LLM-generated curly quotes/smart quotes/ellipsis cause edit failures; fix is deterministic normalization map (15 chars), not fuzzy threshold lowering (false positive risk)
+- LOG-018: Architecture — Two-strategy recovery: (1) confusable normalization → exact match, (2) 99% fuzzy fallback as safety net. Integrated at all 3 edit paths.
 </decisions>
 
 <blockers>
@@ -46,7 +48,7 @@ fs-mcp should work seamlessly with all major AI providers (Claude, Gemini, GPT) 
 </blockers>
 
 <next_action>
-Add test_query_duckdb.py; update README with query_duckdb docs; consider token efficiency pass on tool descriptions (retro finding: ~46% reduction possible but multi-intent tools justified)
+Add test_query_duckdb.py; update README with query_duckdb docs; consider token efficiency pass on tool descriptions; monitor for new confusable patterns in production
 </next_action>
 
 ---
@@ -3179,5 +3181,107 @@ Key research findings (Anthropic, OpenAI, MCP community):
 **What was decided:** Required dep (not optional), CORE_TOOLS tier, no row cap (agent owns LIMIT), JSON array format (proxy pagination), multi-intent tool descriptions justified in verbosity
 **Next action:** Add `test_query_duckdb.py`; update README; consider token efficiency pass as separate task
 **If pivoting:** Implementation: `src/fs_mcp/server.py:1706`. Proxy context: mcpproxy-go truncation in `internal/truncate/truncator.go`. Token audit data in this session's chat history.
+
+---
+
+### [LOG-018] - [BUG] [EXEC] - Unicode confusable auto-recovery in edit_tool - Task: UNICODE-FIX
+**Timestamp:** 2026-03-22 ~21:00
+**Depends On:** LOG-009 (cross-model schema gaps), LOG-011 (APPEND_TO_FILE sentinel)
+
+---
+
+#### Root Cause: LLM Generation Artifact, Not Stack Bug
+
+**The problem:** `edit_files` calls fail with "No match found" when the LLM produces Unicode typographic characters (curly quotes, smart quotes, ellipsis) in `match_text`, but the actual file contains ASCII equivalents.
+
+**Hypothesis tracking:**
+
+| Hypothesis | Likelihood | Test | Status |
+|------------|------------|------|--------|
+| A) MCP daemon corrupts bytes | Medium | Hex-compared daemon input/output | ❌ REJECTED — byte-preserving JSON relay |
+| B) Proxy layer mutates content | Medium | Traced through mcpproxy-go | ❌ REJECTED — JSON relay, no transforms |
+| C) fs-mcp edit_tool normalizes | Low | Read source | ❌ REJECTED — exact literal matching |
+| D) LLM generates Unicode confusables | High | Compared LLM output bytes vs file bytes | ✅ CONFIRMED |
+
+**Evidence:** The LLM reconstructs `match_text` from its understanding of the code, systematically substituting:
+- `'` (U+0027) → `'` (U+2019, RIGHT SINGLE QUOTATION MARK)
+- `"` (U+0022) → `"` / `"` (U+201C/U+201D, SMART DOUBLE QUOTES)
+- `...` (3x U+002E) → `…` (U+2026, HORIZONTAL ELLIPSIS)
+
+This is a pure generation artifact — all three stack layers (daemon, proxy, fs-mcp) are byte-preserving JSON relays.
+
+---
+
+#### Fix: Two-Strategy Recovery in `_try_fuzzy_recover`
+
+**Architecture decision:** Deterministic normalization (not fuzzy threshold lowering) is the correct fix.
+
+| Approach Considered | Verdict | Reason |
+|---------------------|---------|--------|
+| Lower fuzzy threshold to 90% | ❌ REJECTED | Catches truncations as valid matches — broke `test_fuzzy_hints_on_near_match` (similarity 92% on `'worl'` vs `'world'`) |
+| Confusable normalization + exact match | ✅ CHOSEN | Precise, no false positives, zero new dependencies |
+| Full Unicode NFKD normalization | ❌ REJECTED | Overkill — only ~15 LLM-produced confusables in practice |
+
+**Implementation** (`src/fs_mcp/edit_tool.py`):
+
+```python
+# Line 279: Confusable map (15 entries)
+_CONFUSABLE_MAP = {
+    "\u2018": "'",   # LEFT SINGLE QUOTATION MARK
+    "\u2019": "'",   # RIGHT SINGLE QUOTATION MARK
+    "\u201C": '"',   # LEFT DOUBLE QUOTATION MARK
+    "\u201D": '"',   # RIGHT DOUBLE QUOTATION MARK
+    "\u2026": "...", # HORIZONTAL ELLIPSIS
+    "\u2013": "-",   # EN DASH
+    "\u2014": "--",  # EM DASH
+    # ... + 8 more (NBSP, hyphens, low-9 quotes, primes)
+}
+
+# Line 297: Normalization helper
+def _normalize_confusables(text: str) -> str
+
+# Line 304: Two-strategy recovery
+def _try_fuzzy_recover(match_text, file_content):
+    # Strategy 1: Normalize confusables → exact match (handles known LLM patterns)
+    # Strategy 2: Fuzzy fallback at 99% threshold (safety net for unknown confusables)
+```
+
+**Integration points** — recovery called in 3 paths:
+1. `_prepare_edit` (line ~365) — single-file edits
+2. `_apply_edits_to_content` (line 488) — batch edits
+3. `propose_and_review` — batch pipeline (delegates to `_apply_edits_to_content`)
+
+---
+
+#### Test Coverage
+
+| Test | File | What It Verifies |
+|------|------|-----------------|
+| `TestFuzzyRecover::test_curly_quote_recovery` | `test_edit_tool.py:114` | `'` (U+2019) → `'` recovery |
+| `TestFuzzyRecover::test_smart_double_quotes_recovery` | `test_edit_tool.py:124` | `""` (U+201C/D) → `""` recovery |
+| `TestFuzzyRecover::test_ellipsis_recovery` | `test_edit_tool.py:140` | `…` (U+2026) → `...` recovery |
+| `TestFuzzyRecover::test_no_recovery_when_genuinely_different` | `test_edit_tool.py:133` | Genuine mismatches return `None` |
+| `TestFuzzyRecoverIntegration::test_edit_succeeds_with_curly_quotes` | `test_edit_tool.py:149` | Full `_prepare_edit` pipeline |
+| `TestFuzzyRecoverIntegration::test_batch_edit_succeeds_with_curly_quotes` | `test_edit_tool.py:167` | Full `_apply_edits_to_content` pipeline |
+
+**All 117 tests pass.** Published to PyPI.
+
+---
+
+#### Collateral Fixes
+
+| File | Issue | Fix |
+|------|-------|-----|
+| `tests/test_edit_tool.py:106-107` | Stray `APPEND_TO_FILE` strings at module level (edit artifacts from prior session) | Removed — was causing `NameError` on test collection |
+| `tests/test_rtk_integration.py:77` | Assertion expected `"brew install rtk"` but install message changed to curl script | Relaxed to `"install" in msg.lower()` |
+
+---
+
+📦 STATELESS HANDOFF
+**Dependency chain:** LOG-018 ← LOG-009 (cross-model gaps identified the pattern) ← LOG-011 (APPEND_TO_FILE sentinel, whose edit artifacts caused test breakage)
+**What was built:** Unicode confusable auto-recovery in `_try_fuzzy_recover` — deterministic normalization map (15 entries) + 99% fuzzy fallback. Integrated at all 3 edit paths.
+**What was decided:** Normalization over threshold-lowering (false positive risk). The bug is an LLM generation artifact, not a stack issue — daemon/proxy/fs-mcp are all byte-preserving.
+**Next action:** Monitor for new confusable patterns in production; extend `_CONFUSABLE_MAP` if new Unicode chars surface. Consider adding a log/warning when recovery kicks in for observability.
+**If pivoting:** Implementation: `src/fs_mcp/edit_tool.py:276-335`. Tests: `tests/test_edit_tool.py:104-185`. The confusable map is the single source of truth for known LLM substitutions.
 
 ---

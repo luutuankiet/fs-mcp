@@ -161,8 +161,11 @@ def _capture_login_env() -> dict:
     """
     shell = _get_user_shell()
     try:
+        # Use `-i -l` (interactive + login) so both .zshrc and .zprofile/.profile
+        # are sourced. Plain `-l` skips .zshrc in zsh, which is where tools like
+        # nvm, pyenv, and pnpm typically register themselves.
         result = subprocess.run(
-            [shell, "-l", "-c", "env"],
+            [shell, "-i", "-l", "-c", "env"],
             capture_output=True,
             text=True,
             timeout=10,

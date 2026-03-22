@@ -93,7 +93,7 @@ def test_capture_login_env_returns_dict_with_path(monkeypatch):
     assert env["HOME"] == "/home/ubuntu"
     # Must have invoked the login shell correctly
     args_used = mock_run.call_args[0][0]
-    assert args_used == ["/bin/zsh", "-l", "-c", "env"]
+    assert args_used == ["/bin/zsh", "-i", "-l", "-c", "env"]
 
 
 # ---------------------------------------------------------------------------

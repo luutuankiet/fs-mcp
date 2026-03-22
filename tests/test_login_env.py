@@ -1,12 +1,13 @@
 """Tests for _capture_login_env() and run_command's login-env integration.
 
 Covers:
-    1. _capture_login_env() happy path — returns a dict with PATH
-    2. _capture_login_env() falls back gracefully when $SHELL is broken
-    3. _capture_login_env() falls back gracefully on subprocess timeout
-    4. run_command passes LOGIN_ENV (not the bare process env) to subprocess
-    5. run_command uses $SHELL, not hardcoded /bin/bash
-    6. A PATH entry injected into LOGIN_ENV is visible inside a run_command call
+    1. _capture_login_env() returns a dict with PATH
+    2. _capture_login_env() prepends discovered version manager dirs to PATH
+    3. _capture_login_env() skips dirs already in PATH (no duplicates)
+    4. _capture_login_env() skips non-existent dirs (no phantom entries)
+    5. run_command passes LOGIN_ENV (not the bare process env) to subprocess
+    6. run_command uses _get_user_shell(), not hardcoded /bin/bash
+    7. A PATH entry injected into LOGIN_ENV is visible inside a run_command call
 """
 import os
 import subprocess
@@ -38,27 +39,13 @@ def test_get_user_shell_prefers_shell_env_var(monkeypatch):
 
 
 def test_get_user_shell_falls_back_to_passwd_when_no_env(monkeypatch):
-    """When $SHELL is absent, _get_user_shell() reads from /etc/passwd via pwd.getpwuid."""
+    """When $SHELL is absent, reads from /etc/passwd via pwd.getpwuid."""
     monkeypatch.delenv("SHELL", raising=False)
-
-    import pwd as _pwd
+    import pwd as real_pwd
     fake_entry = MagicMock()
     fake_entry.pw_shell = "/bin/fish"
-
-    with patch("fs_mcp.server.pwd", create=True) as mock_pwd_mod:
-        # pwd is imported inside the function, patch it at the module level
-        with patch("builtins.__import__", wraps=__import__) as mock_import:
-            pass  # just verify the logic via direct pwd patch below
-
-    # Simpler: patch pwd.getpwuid directly in the server module's call
-    with patch("fs_mcp.server.os.getuid", return_value=1000):
-        import pwd as real_pwd
-        with patch.object(real_pwd, "getpwuid", return_value=fake_entry):
-            # Re-import pwd inside _get_user_shell uses the real module;
-            # fake the return value
-            result = server._get_user_shell()
-    # Will either be /bin/fish (if pwd patch worked) or /bin/bash fallback —
-    # either way it must not be None and must be a string
+    with patch.object(real_pwd, "getpwuid", return_value=fake_entry):
+        result = server._get_user_shell()
     assert isinstance(result, str)
     assert result.startswith("/")
 
@@ -66,76 +53,80 @@ def test_get_user_shell_falls_back_to_passwd_when_no_env(monkeypatch):
 def test_get_user_shell_falls_back_to_bash_if_all_fail(monkeypatch):
     """If $SHELL is absent and pwd raises, fall back to /bin/bash."""
     monkeypatch.delenv("SHELL", raising=False)
-
     import pwd as real_pwd
     with patch.object(real_pwd, "getpwuid", side_effect=KeyError("no entry")):
         result = server._get_user_shell()
-
     assert result == "/bin/bash"
 
 
 # ---------------------------------------------------------------------------
-# 1. _capture_login_env — happy path
+# 1. _capture_login_env — returns dict with PATH
 # ---------------------------------------------------------------------------
 
-def test_capture_login_env_returns_dict_with_path(monkeypatch):
-    """_capture_login_env() should return a non-empty dict that always contains PATH."""
-    fake_env_output = "PATH=/usr/local/bin:/usr/bin\nHOME=/home/ubuntu\nSHELL=/bin/zsh\n"
-    mock_result = MagicMock(returncode=0, stdout=fake_env_output)
-
-    with patch("fs_mcp.server.subprocess.run", return_value=mock_result) as mock_run:
-        monkeypatch.setenv("SHELL", "/bin/zsh")
-        env = server._capture_login_env()
-
+def test_capture_login_env_returns_dict_with_path():
+    """_capture_login_env() must always return a dict containing PATH."""
+    env = server._capture_login_env()
     assert isinstance(env, dict)
     assert "PATH" in env
-    assert env["PATH"] == "/usr/local/bin:/usr/bin"
-    assert env["HOME"] == "/home/ubuntu"
-    # Must have invoked the login shell correctly
-    args_used = mock_run.call_args[0][0]
-    assert args_used == ["/bin/zsh", "-i", "-l", "-c", "env"]
+    assert len(env["PATH"]) > 0
 
 
 # ---------------------------------------------------------------------------
-# 2. _capture_login_env — non-zero exit falls back to os.environ
+# 2. _capture_login_env — prepends discovered dirs
 # ---------------------------------------------------------------------------
 
-def test_capture_login_env_falls_back_on_nonzero_exit(monkeypatch, capsys):
-    """A non-zero exit from the shell should fall back to the process environment."""
-    mock_result = MagicMock(returncode=1, stdout="")
+def test_capture_login_env_prepends_discovered_dirs(tmp_path, monkeypatch):
+    """Existing dirs matching _VERSION_MANAGER_BIN_DIRS patterns are prepended to PATH."""
+    fake_bin = tmp_path / ".cargo" / "bin"
+    fake_bin.mkdir(parents=True)
 
-    with patch("fs_mcp.server.subprocess.run", return_value=mock_result):
-        monkeypatch.setenv("SHELL", "/bin/bash")
-        env = server._capture_login_env()
+    monkeypatch.setattr(server, "_VERSION_MANAGER_BIN_DIRS", ["{home}/.cargo/bin"])
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
 
-    # Should still be a dict derived from the current process env
-    assert isinstance(env, dict)
-    assert "PATH" in env
-    # Warning should have been printed to stderr
-    captured = capsys.readouterr()
-    assert "falling back to process environment" in captured.err
+    env = server._capture_login_env()
 
-
-# ---------------------------------------------------------------------------
-# 3. _capture_login_env — timeout falls back to os.environ
-# ---------------------------------------------------------------------------
-
-def test_capture_login_env_falls_back_on_timeout(monkeypatch, capsys):
-    """A subprocess.TimeoutExpired should fall back gracefully, not raise."""
-    with patch(
-        "fs_mcp.server.subprocess.run",
-        side_effect=subprocess.TimeoutExpired(cmd="env", timeout=10),
-    ):
-        monkeypatch.setenv("SHELL", "/bin/zsh")
-        env = server._capture_login_env()
-
-    assert isinstance(env, dict)
-    captured = capsys.readouterr()
-    assert "falling back to process environment" in captured.err
+    path_dirs = env["PATH"].split(":")
+    assert str(fake_bin) in path_dirs
+    assert path_dirs.index(str(fake_bin)) < path_dirs.index("/usr/bin")
 
 
 # ---------------------------------------------------------------------------
-# 4. run_command passes LOGIN_ENV to subprocess, not bare os.environ
+# 3. _capture_login_env — no duplicate PATH entries
+# ---------------------------------------------------------------------------
+
+def test_capture_login_env_no_duplicate_path_entries(tmp_path, monkeypatch):
+    """Dirs already in PATH must not be added again."""
+    fake_bin = tmp_path / ".cargo" / "bin"
+    fake_bin.mkdir(parents=True)
+
+    monkeypatch.setattr(server, "_VERSION_MANAGER_BIN_DIRS", ["{home}/.cargo/bin"])
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", f"{fake_bin}:/usr/bin")
+
+    env = server._capture_login_env()
+
+    path_dirs = env["PATH"].split(":")
+    assert path_dirs.count(str(fake_bin)) == 1
+
+
+# ---------------------------------------------------------------------------
+# 4. _capture_login_env — skips non-existent dirs
+# ---------------------------------------------------------------------------
+
+def test_capture_login_env_skips_nonexistent_dirs(tmp_path, monkeypatch):
+    """Dirs that don't exist on disk must not appear in PATH."""
+    monkeypatch.setattr(server, "_VERSION_MANAGER_BIN_DIRS", ["{home}/.nonexistent/bin"])
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    env = server._capture_login_env()
+
+    assert str(tmp_path / ".nonexistent" / "bin") not in env["PATH"]
+
+
+# ---------------------------------------------------------------------------
+# 5. run_command passes LOGIN_ENV to subprocess
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -145,15 +136,13 @@ async def test_run_command_passes_login_env_to_subprocess(temp_env, monkeypatch)
     monkeypatch.setattr(server, "LOGIN_ENV", sentinel_env)
 
     captured_kwargs = {}
-
     original_run = subprocess.run
 
     def capturing_run(cmd, **kwargs):
-        # Only intercept the run_command subprocess call (shell=True)
         if kwargs.get("shell"):
             captured_kwargs.update(kwargs)
             return MagicMock(returncode=0, stdout="ok", stderr="")
-        return original_run(cmd, **kwargs)  # let RTK/other calls through
+        return original_run(cmd, **kwargs)
 
     with patch("fs_mcp.server.subprocess.run", side_effect=capturing_run):
         await server.run_command.fn(
@@ -164,13 +153,11 @@ async def test_run_command_passes_login_env_to_subprocess(temp_env, monkeypatch)
         )
 
     assert "env" in captured_kwargs, "run_command did not pass env= to subprocess"
-    assert captured_kwargs["env"] is sentinel_env, (
-        "run_command passed a different env than LOGIN_ENV"
-    )
+    assert captured_kwargs["env"] is sentinel_env
 
 
 # ---------------------------------------------------------------------------
-# 5. run_command uses $SHELL, not hardcoded /bin/bash
+# 6. run_command uses _get_user_shell(), not hardcoded /bin/bash
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -196,20 +183,17 @@ async def test_run_command_uses_shell_env_var(temp_env, monkeypatch):
             compact=False,
         )
 
-    assert captured_kwargs.get("executable") == "/bin/zsh", (
-        f"Expected /bin/zsh, got {captured_kwargs.get('executable')}"
-    )
+    assert captured_kwargs.get("executable") == "/bin/zsh"
 
 
 # ---------------------------------------------------------------------------
-# 6. PATH injected into LOGIN_ENV is visible inside run_command
+# 7. PATH injected into LOGIN_ENV is visible inside run_command
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_run_command_login_env_path_is_visible_in_command(temp_env, monkeypatch):
-    """A PATH entry present in LOGIN_ENV should be reachable from inside a command."""
-    # Create a fake 'mynode' binary in a temp dir
-    fake_bin = tmp_path = temp_env / "fake_bin"
+    """A binary on a PATH entry in LOGIN_ENV must be callable from run_command."""
+    fake_bin = temp_env / "fake_bin"
     fake_bin.mkdir()
     fake_exe = fake_bin / "mynode"
     fake_exe.write_text("#!/bin/sh\necho mynode-ok\n")
@@ -226,6 +210,4 @@ async def test_run_command_login_env_path_is_visible_in_command(temp_env, monkey
         compact=False,
     )
 
-    assert "mynode-ok" in result, (
-        f"Binary on injected PATH was not found. run_command output:\n{result}"
-    )
+    assert "mynode-ok" in result, f"Binary on injected PATH not found:\n{result}"

@@ -151,47 +151,81 @@ def _get_user_shell() -> str:
     return "/bin/bash"
 
 
-def _capture_login_env() -> dict:
-    """Capture the user's full login shell environment.
+# Well-known binary directories for common version managers and language runtimes.
+# Checked at initialize() time; any that exist are prepended to PATH.
+# This approach is shell-agnostic — no rc file parsing, no subprocess, no assumptions
+# about whether the user uses bash/zsh/fish or how the parent process was launched.
+_VERSION_MANAGER_BIN_DIRS = [
+    # nvm
+    "{home}/.nvm/versions/node/*/bin",
+    # fnm
+    "{home}/.local/share/fnm/node-versions/*/installation/bin",
+    # pyenv
+    "{home}/.pyenv/shims",
+    "{home}/.pyenv/bin",
+    # rbenv
+    "{home}/.rbenv/shims",
+    "{home}/.rbenv/bin",
+    # cargo (Rust)
+    "{home}/.cargo/bin",
+    # go
+    "{home}/go/bin",
+    "{home}/.go/bin",
+    # bun
+    "{home}/.bun/bin",
+    # pnpm (standalone install)
+    "{home}/.local/share/pnpm",
+    # deno
+    "{home}/.deno/bin",
+    # volta
+    "{home}/.volta/bin",
+    # asdf shims
+    "{home}/.asdf/shims",
+    "{home}/.asdf/bin",
+    # mise (formerly rtx)
+    "{home}/.local/share/mise/shims",
+    # homebrew (Linux)
+    "/home/linuxbrew/.linuxbrew/bin",
+    "/home/linuxbrew/.linuxbrew/sbin",
+    # local user bin
+    "{home}/.local/bin",
+]
 
-    Spawns "<user-shell> -l -c env" so nvm, pyenv, cargo, pnpm, etc. are all
-    present. Uses _get_user_shell() so it works even when the parent process
-    (Claude Desktop, VS Code, systemd, etc.) did not propagate $SHELL.
-    Falls back to the current process environment if the shell call fails.
+
+def _capture_login_env() -> dict:
+    """Build a login-equivalent environment by probing well-known version manager paths.
+
+    Shell-agnostic: scans _VERSION_MANAGER_BIN_DIRS for directories that exist and
+    glob-expands wildcards (e.g. nvm's per-version node paths). Found dirs are
+    prepended to PATH in order. Works regardless of how the server was launched
+    (terminal, Claude Desktop, VS Code, systemd, etc.) and regardless of shell
+    (bash, zsh, fish, nushell...).
     """
-    shell = _get_user_shell()
-    try:
-        # Use `-i -l` (interactive + login) so both .zshrc and .zprofile/.profile
-        # are sourced. Plain `-l` skips .zshrc in zsh, which is where tools like
-        # nvm, pyenv, and pnpm typically register themselves.
-        result = subprocess.run(
-            [shell, "-i", "-l", "-c", "env"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode == 0:
-            env: dict = {}
-            for line in result.stdout.splitlines():
-                if "=" in line:
-                    key, _, value = line.partition("=")
-                    env[key] = value
-            if env:
-                return env
+    import glob
+    home = str(Path.home())
+    current_env = dict(os.environ)
+    current_path_dirs = current_env.get("PATH", "").split(":")
+    current_path_set = set(current_path_dirs)
+
+    extra_dirs: list[str] = []
+    for pattern in _VERSION_MANAGER_BIN_DIRS:
+        expanded_pattern = pattern.format(home=home)
+        # glob handles both literal paths and wildcard patterns (e.g. nvm's */bin)
+        for match in sorted(glob.glob(expanded_pattern), reverse=True):  # reverse=newest first
+            if os.path.isdir(match) and match not in current_path_set:
+                extra_dirs.append(match)
+                current_path_set.add(match)
+
+    if extra_dirs:
+        new_path = ":".join(extra_dirs + current_path_dirs)
+        current_env["PATH"] = new_path
         print(
-            f"[fs-mcp] Warning: '{shell} -l -c env' exited {result.returncode}, "
-            "falling back to process environment.",
+            f"[fs-mcp] Augmented PATH with {len(extra_dirs)} version manager dirs.",
             file=sys.stderr,
             flush=True,
         )
-    except Exception as exc:
-        print(
-            f"[fs-mcp] Warning: failed to capture login env ({exc}), "
-            "falling back to process environment.",
-            file=sys.stderr,
-            flush=True,
-        )
-    return dict(os.environ)
+
+    return current_env
 
 
 # --- RTK (Rust Token Killer) Integration ---

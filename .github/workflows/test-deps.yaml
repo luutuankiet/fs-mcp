@@ -1,0 +1,87 @@
+name: "🧪 Dependency & RTK Integration Tests"
+
+# On-demand only — run from Actions tab or gh CLI.
+# Tests that all CLI dependencies install correctly on fresh systems
+# across both amd64 and arm64 architectures.
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "Target platform(s)"
+        required: true
+        default: "both"
+        type: choice
+        options:
+          - amd64
+          - arm64
+          - both
+
+jobs:
+  test:
+    name: "Test (${{ matrix.platform }})"
+    runs-on: ubuntu-latest
+    strategy:
+      # Don't cancel arm64 if amd64 fails (or vice versa) — we want results for both
+      fail-fast: false
+      matrix:
+        # Dynamic matrix: converts the input choice into a JSON array of platforms.
+        # "both" -> ["linux/amd64", "linux/arm64"], "amd64" -> ["linux/amd64"], etc.
+        platform: ${{ fromJson(
+          github.event.inputs.platform == 'both' && '["linux/amd64", "linux/arm64"]' ||
+          github.event.inputs.platform == 'amd64' && '["linux/amd64"]' ||
+          '["linux/arm64"]'
+        ) }}
+    steps:
+      # 1. Checkout the repo so Dockerfile.test is available
+      - uses: actions/checkout@v4
+
+      # 2. Set up QEMU — required to emulate arm64 on GitHub's x86 runners.
+      #    Only needed for cross-architecture builds; skipped for native amd64.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        if: matrix.platform == 'linux/arm64'
+
+      # 3. Set up Docker Buildx — the modern Docker build engine.
+      #    Required for: multi-platform builds, GHA cache backend, BuildKit features.
+      #    Even amd64-only builds benefit from the GHA cache layer.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 4. Build the test image using Dockerfile.test
+      #    This Dockerfile:
+      #    - Starts from python:3.10-slim (matches our min Python version)
+      #    - Installs all CLI deps from scratch (rg, jq, yq, rtk)
+      #    - Verifies each dependency is working and reports versions
+      #    - Runs the full RTK integration test suite (43 tests)
+      #    - RTK gracefully degrades on arm64 if glibc is too old
+      #
+      #    push: false — we only care about the build+test, not publishing
+      #    cache-from/to: uses GitHub Actions cache to speed up rebuilds
+      - name: "Build & test (${{ matrix.platform }})"
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.test
+          platforms: ${{ matrix.platform }}
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # 5. Job summary — visible in the Actions run page.
+      #    Reports what was tested even if the build failed (if: always).
+      - name: Summary
+        if: always()
+        run: |
+          echo "## 🧪 Dependency Test: ${{ matrix.platform }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Platform | \`${{ matrix.platform }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Dockerfile | \`Dockerfile.test\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build | ${{ job.status == 'success' && '✅ Passed' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### What was tested" >> $GITHUB_STEP_SUMMARY
+          echo "- Fresh install of all CLI deps (rg, jq, yq, rtk)" >> $GITHUB_STEP_SUMMARY
+          echo "- RTK integration: compression, rewrite, auto-update" >> $GITHUB_STEP_SUMMARY
+          echo "- check_dependencies tool" >> $GITHUB_STEP_SUMMARY
+          echo "- Graceful RTK degradation on unsupported platforms" >> $GITHUB_STEP_SUMMARY

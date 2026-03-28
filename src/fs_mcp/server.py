@@ -127,6 +127,8 @@ IS_RIPGREP_AVAILABLE = False
 IS_JQ_AVAILABLE = False
 IS_YQ_AVAILABLE = False
 IS_RTK_AVAILABLE = False
+_RTK_PATH: Optional[str] = None  # Absolute path to rtk binary, resolved at initialize()
+_RTK_MANAGED = False  # True if RTK is in ~/.local/bin (managed by auto-update)
 LOGIN_ENV: Optional[dict] = None  # Populated at initialize() time; passed to run_command subprocess
 
 
@@ -277,6 +279,39 @@ RTK_UPDATE_INTERVAL_HOURS = 24  # Auto-update check interval
 RUN_COMMAND_DEFAULT_TIMEOUT = 30
 _rtk_last_update_check: Optional[float] = None  # epoch timestamp of last update check
 
+
+def _resolve_rtk_path() -> Optional[str]:
+    """
+    Resolve the absolute path to the RTK binary.
+    
+    Resolution order:
+    1. shutil.which('rtk') — respects current PATH
+    2. ~/.local/bin/rtk — default install.sh location
+    3. LOGIN_ENV PATH lookup — in case login shell has different PATH
+    
+    Returns:
+        Absolute path to rtk binary, or None if not found.
+    """
+    # 1. Standard PATH lookup
+    path = shutil.which('rtk')
+    if path:
+        return str(Path(path).resolve())
+    
+    # 2. Default install.sh location
+    local_bin = Path.home() / '.local' / 'bin' / 'rtk'
+    if local_bin.exists() and local_bin.is_file():
+        return str(local_bin.resolve())
+    
+    # 3. Check LOGIN_ENV PATH (login shell may have different PATH)
+    if LOGIN_ENV and 'PATH' in LOGIN_ENV:
+        for dir_path in LOGIN_ENV['PATH'].split(':'):
+            candidate = Path(dir_path) / 'rtk'
+            if candidate.exists() and candidate.is_file():
+                return str(candidate.resolve())
+    
+    return None
+
+
 # Commands blocked from run_command for safety — matched against first token
 BLOCKED_COMMANDS = {
     "rm", "rmdir", "rmrf",
@@ -323,14 +358,14 @@ def _rtk_compress_content(content: str, file_path: str = "-") -> tuple[str, Opti
         # Fall back to stdin for content that doesn't map to a file (e.g., run_command output)
         if file_path != "-" and Path(file_path).exists():
             result = subprocess.run(
-                ["rtk", "read", file_path, "-l", "minimal"],
+                [_RTK_PATH, "read", file_path, "-l", "minimal"],
                 capture_output=True,
                 text=True,
                 timeout=RTK_TIMEOUT_SECONDS
             )
         else:
             result = subprocess.run(
-                ["rtk", "read", "-", "-l", "minimal"],
+                [_RTK_PATH, "read", "-", "-l", "minimal"],
                 input=content,
                 capture_output=True,
                 text=True,
@@ -374,7 +409,7 @@ def _rtk_rewrite_command(command: str) -> Optional[str]:
     
     try:
         result = subprocess.run(
-            ["rtk", "rewrite", command],
+            [_RTK_PATH, "rewrite", command],
             capture_output=True,
             text=True,
             timeout=RTK_REWRITE_TIMEOUT
@@ -395,13 +430,17 @@ def _rtk_auto_update() -> Optional[str]:
     """
     Check for RTK updates and install if a newer version is available.
     
-    Runs at most once per RTK_UPDATE_INTERVAL_HOURS. Uses the official RTK
-    install script which downloads the latest release from GitHub.
+    Runs at most once per RTK_UPDATE_INTERVAL_HOURS. Only auto-updates
+    managed installs (~/.local/bin). User-installed RTK (e.g., /usr/local/bin,
+    brew, cargo) is left untouched.
+    
+    After successful install, re-resolves _RTK_PATH and IS_RTK_AVAILABLE
+    so the new binary is used immediately.
     
     Returns:
         Status message or None if no update was needed/attempted.
     """
-    global _rtk_last_update_check
+    global _rtk_last_update_check, _RTK_PATH, IS_RTK_AVAILABLE, _RTK_MANAGED
     
     now = time.time()
     if _rtk_last_update_check and (now - _rtk_last_update_check) < (RTK_UPDATE_INTERVAL_HOURS * 3600):
@@ -409,35 +448,62 @@ def _rtk_auto_update() -> Optional[str]:
     
     _rtk_last_update_check = now
     
+    # Only auto-update if RTK is managed by us (installed via install.sh to ~/.local/bin)
+    # or if RTK is not installed at all (first-time install attempt)
+    if _RTK_PATH and not _RTK_MANAGED:
+        return None  # User-installed RTK — don't touch
+    
+    managed_dir = str(Path.home() / '.local' / 'bin')
+    
     try:
-        # Get current version
-        current = subprocess.run(
-            ["rtk", "--version"],
-            capture_output=True, text=True, timeout=5
-        )
-        current_version = current.stdout.strip() if current.returncode == 0 else "unknown"
+        # Get current version (if RTK exists)
+        current_version = "not installed"
+        if _RTK_PATH:
+            current = subprocess.run(
+                [_RTK_PATH, "--version"],
+                capture_output=True, text=True, timeout=5
+            )
+            current_version = current.stdout.strip() if current.returncode == 0 else "unknown"
         
-        # Run install script (idempotent — installs latest, skips if already current)
+        # Run install script, targeting the managed directory
         result = subprocess.run(
-            ["bash", "-c", "curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh"],
+            ["bash", "-c", f"RTK_INSTALL_DIR={managed_dir} curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh"],
             capture_output=True,
             text=True,
             timeout=60
         )
         
         if result.returncode == 0:
-            # Check new version
-            new = subprocess.run(
-                ["rtk", "--version"],
-                capture_output=True, text=True, timeout=5
-            )
-            new_version = new.stdout.strip() if new.returncode == 0 else "unknown"
-            
-            if new_version != current_version:
-                return f"RTK updated: {current_version} -> {new_version}"
-            return None  # Already latest
+            # Re-resolve path (may have just been installed for the first time)
+            new_path = _resolve_rtk_path()
+            if new_path:
+                _RTK_PATH = new_path
+                IS_RTK_AVAILABLE = True
+                _RTK_MANAGED = str(Path(new_path).resolve()).startswith(managed_dir)
+                
+                # Check new version
+                new = subprocess.run(
+                    [_RTK_PATH, "--version"],
+                    capture_output=True, text=True, timeout=5
+                )
+                new_version = new.stdout.strip() if new.returncode == 0 else "unknown"
+                
+                if current_version == "not installed":
+                    msg = f"RTK installed: {new_version} (at {_RTK_PATH})"
+                    print(f"[fs-mcp] {msg}", file=sys.stderr, flush=True)
+                    return msg
+                elif new_version != current_version:
+                    msg = f"RTK updated: {current_version} -> {new_version}"
+                    print(f"[fs-mcp] {msg}", file=sys.stderr, flush=True)
+                    return msg
+                return None  # Already latest
+            else:
+                # Install script ran but binary not found — likely unsupported arch
+                return None
         else:
-            return f"RTK update check failed (exit {result.returncode})"
+            # Install failed — likely unsupported arch (ARM/Pi), not an error
+            stderr_hint = result.stderr.strip()[:100] if result.stderr else ""
+            return f"RTK install skipped ({stderr_hint or 'exit ' + str(result.returncode)})"
             
     except Exception as e:
         return f"RTK update check error: {e}"
@@ -457,7 +523,7 @@ def _rtk_grep(pattern: str, search_path: str) -> tuple[str, Optional[str]]:
     """
     try:
         result = subprocess.run(
-            ["rtk", "grep", pattern, search_path],
+            [_RTK_PATH, "grep", pattern, search_path],
             capture_output=True,
             text=True,
             timeout=RTK_TIMEOUT_SECONDS
@@ -479,7 +545,7 @@ def _rtk_grep(pattern: str, search_path: str) -> tuple[str, Optional[str]]:
 def _rtk_tree(path: str, max_depth: int, exclude_dirs: Optional[List[str]] = None) -> tuple[Optional[str], Optional[str]]:
     """Run RTK tree for compact filesystem exploration."""
     try:
-        command = ["rtk", "tree"]
+        command = [_RTK_PATH, "tree"]
 
         if max_depth is not None:
             command.extend(["-L", str(max_depth)])
@@ -632,6 +698,7 @@ CORE_TOOLS = {
     "query_yq",
     "query_duckdb",
     "run_command",
+    "check_dependencies",
 }
 
 # Tools excluded from core tier (available with --all)
@@ -659,6 +726,205 @@ EXCLUDED_FROM_CORE = {
 }
 
 
+@mcp.tool()
+async def check_dependencies(
+    fix: Annotated[
+        bool,
+        Field(default=False, description="If true, attempt to update managed dependencies (e.g., RTK auto-update). "
+              "Only updates deps installed via their standard installer to ~/.local/bin.")
+    ] = False,
+    verbose: Annotated[
+        bool,
+        Field(default=False, description="If true, show detailed info: all binary locations, PATH entries, "
+              "architecture, duplicate detection.")
+    ] = False,
+) -> str:
+    """Check health and version status of all fs-mcp dependencies.
+
+    Reports: installed/missing, version, path, duplicates, managed vs user-installed.
+    Use `fix=true` to auto-update managed dependencies.
+
+    **Example output (default):**
+    ```
+    ✅ ripgrep (rg) 14.1.1 — /usr/bin/rg
+    ✅ jq 1.7.1 — /usr/bin/jq
+    ✅ yq 4.44.1 — /usr/local/bin/yq
+    ✅ rtk 0.31.0 — ~/.local/bin/rtk [managed]
+    ⚠️  rtk: duplicate at /usr/local/bin/rtk (same version)
+    ```
+
+    **With fix=true:**
+    ```
+    ✅ rtk updated: 0.29.0 → 0.31.0
+    ```
+    """
+    global IS_RTK_AVAILABLE, _RTK_PATH, _RTK_MANAGED
+
+    import platform
+    lines = []
+    warnings = []
+    arch = platform.machine()
+
+    # --- Helper: get version from a binary ---
+    def _get_version(binary_path: str, version_flag: str = "--version") -> str:
+        try:
+            result = subprocess.run(
+                [binary_path, version_flag],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                return result.stdout.strip().split('\n')[0]
+            return "unknown"
+        except Exception:
+            return "error"
+
+    # --- Helper: find all copies of a binary ---
+    def _find_all(name: str) -> list:
+        """Find all locations of a binary in PATH."""
+        locations = []
+        seen = set()
+        # Check PATH
+        path_dirs = os.environ.get('PATH', '').split(':')
+        if LOGIN_ENV and 'PATH' in LOGIN_ENV:
+            path_dirs += LOGIN_ENV['PATH'].split(':')
+        for d in path_dirs:
+            candidate = Path(d) / name
+            try:
+                resolved = str(candidate.resolve())
+                if candidate.exists() and candidate.is_file() and resolved not in seen:
+                    seen.add(resolved)
+                    locations.append(resolved)
+            except Exception:
+                pass
+        # Also check common manual-install locations
+        for extra in [
+            Path.home() / '.local' / 'bin' / name,
+            Path.home() / '.cargo' / 'bin' / name,
+            Path('/usr/local/bin') / name,
+            Path('/usr/bin') / name,
+        ]:
+            try:
+                resolved = str(extra.resolve())
+                if extra.exists() and extra.is_file() and resolved not in seen:
+                    seen.add(resolved)
+                    locations.append(resolved)
+            except Exception:
+                pass
+        return locations
+
+    # --- Helper: format path for display ---
+    def _display_path(p: str) -> str:
+        home = str(Path.home())
+        if p.startswith(home):
+            return "~" + p[len(home):]
+        return p
+
+    # --- Check each dependency ---
+
+    # 1. ripgrep
+    rg_path = shutil.which('rg')
+    if rg_path:
+        ver = _get_version(rg_path)
+        lines.append(f"✅ ripgrep (rg) {ver} — {_display_path(rg_path)}")
+        if verbose:
+            for loc in _find_all('rg'):
+                if loc != str(Path(rg_path).resolve()):
+                    warnings.append(f"   ⚠️  rg: also found at {_display_path(loc)}")
+    else:
+        lines.append("❌ ripgrep (rg) — NOT FOUND (grep_content will fail)")
+
+    # 2. jq
+    jq_path = shutil.which('jq')
+    if jq_path:
+        ver = _get_version(jq_path)
+        lines.append(f"✅ jq {ver} — {_display_path(jq_path)}")
+    else:
+        lines.append("❌ jq — NOT FOUND (query_jq will fail)")
+
+    # 3. yq
+    yq_path = shutil.which('yq')
+    if yq_path:
+        ver = _get_version(yq_path)
+        lines.append(f"✅ yq {ver} — {_display_path(yq_path)}")
+    else:
+        lines.append("❌ yq — NOT FOUND (query_yq will fail)")
+
+    # 4. RTK (the interesting one)
+    if _RTK_PATH:
+        ver = _get_version(_RTK_PATH)
+        managed_tag = " [managed]" if _RTK_MANAGED else " [user-installed]"
+        lines.append(f"✅ rtk {ver} — {_display_path(_RTK_PATH)}{managed_tag}")
+
+        # Check for duplicates
+        all_rtk = _find_all('rtk')
+        primary_resolved = str(Path(_RTK_PATH).resolve())
+        dupes = [loc for loc in all_rtk if loc != primary_resolved]
+        if dupes:
+            for dupe in dupes:
+                dupe_ver = _get_version(dupe)
+                same = "(same version)" if dupe_ver == ver else f"(DIFFERENT: {dupe_ver})"
+                warnings.append(f"⚠️  rtk: duplicate at {_display_path(dupe)} {same}")
+                if dupe_ver != ver:
+                    warnings.append(f"   💡 Consider removing the older copy to avoid confusion")
+    else:
+        lines.append(f"⚠️  rtk — NOT FOUND (token-efficient mode disabled, arch: {arch})")
+        if fix:
+            lines.append("   🔧 Attempting RTK install...")
+
+    # 5. Optional: tree (used by rtk tree)
+    if verbose:
+        tree_path = shutil.which('tree')
+        if tree_path:
+            ver = _get_version(tree_path)
+            lines.append(f"✅ tree {ver} — {_display_path(tree_path)}")
+        else:
+            lines.append(f"⚠️  tree — not found (directory_tree compact mode may fall back to built-in)")
+
+    # --- Fix mode ---
+    if fix:
+        if _RTK_PATH and _RTK_MANAGED:
+            # Update managed RTK
+            update_result = _rtk_auto_update()
+            if update_result and ("updated" in update_result.lower() or "installed" in update_result.lower()):
+                lines.append(f"🔧 {update_result}")
+            elif update_result:
+                lines.append(f"ℹ️  {update_result}")
+            else:
+                lines.append("ℹ️  RTK already at latest version")
+        elif _RTK_PATH and not _RTK_MANAGED:
+            lines.append(f"ℹ️  RTK is user-installed at {_display_path(_RTK_PATH)} — skipping auto-update")
+            lines.append(f"   💡 To enable auto-update, install via: curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh")
+        elif not _RTK_PATH:
+            # Try to install RTK for the first time
+            update_result = _rtk_auto_update()
+            if update_result and "installed" in update_result.lower():
+                lines.append(f"🔧 {update_result}")
+            elif update_result:
+                lines.append(f"ℹ️  {update_result}")
+            else:
+                lines.append(f"ℹ️  RTK install failed — may not be available for {arch}")
+
+    # --- Verbose: system info ---
+    if verbose:
+        lines.append("")
+        lines.append(f"[system] arch: {arch}, platform: {platform.system()}")
+        lines.append(f"[system] IS_RTK_AVAILABLE: {IS_RTK_AVAILABLE}")
+        lines.append(f"[system] _RTK_PATH: {_RTK_PATH}")
+        lines.append(f"[system] _RTK_MANAGED: {_RTK_MANAGED}")
+        if LOGIN_ENV and 'PATH' in LOGIN_ENV:
+            path_entries = LOGIN_ENV['PATH'].split(':')[:10]
+            lines.append(f"[system] LOGIN_ENV PATH (first 10):")
+            for pe in path_entries:
+                lines.append(f"   {pe}")
+
+    # Combine
+    result = "\n".join(lines)
+    if warnings:
+        result += "\n\n" + "\n".join(warnings)
+
+    return result
+
+
 def initialize(directories: List[str], use_all_tools: bool = False):
     """Initialize the allowed directories, check for dependencies, and configure tool tier.
     
@@ -666,7 +932,7 @@ def initialize(directories: List[str], use_all_tools: bool = False):
         directories: List of allowed directory paths
         use_all_tools: If False (default), expose only CORE_TOOLS. If True, expose all tools.
     """
-    global ALLOWED_DIRS, USER_ACCESSIBLE_DIRS, IS_VSCODE_CLI_AVAILABLE, IS_RIPGREP_AVAILABLE, IS_JQ_AVAILABLE, IS_YQ_AVAILABLE, LOGIN_ENV
+    global ALLOWED_DIRS, USER_ACCESSIBLE_DIRS, IS_VSCODE_CLI_AVAILABLE, IS_RIPGREP_AVAILABLE, IS_JQ_AVAILABLE, IS_YQ_AVAILABLE, IS_RTK_AVAILABLE, _RTK_PATH, _RTK_MANAGED, LOGIN_ENV
     ALLOWED_DIRS.clear()
     USER_ACCESSIBLE_DIRS.clear()
 
@@ -675,15 +941,27 @@ def initialize(directories: List[str], use_all_tools: bool = False):
     LOGIN_ENV = _capture_login_env()
 
     # Check required dependencies (exits with instructions if missing)
-    check_required_dependencies()
+    rtk_ok = check_required_dependencies()
     
     IS_VSCODE_CLI_AVAILABLE = shutil.which('code') is not None
     IS_RIPGREP_AVAILABLE = True  # Guaranteed by check_required_dependencies
     IS_JQ_AVAILABLE = True       # Guaranteed by check_required_dependencies
     IS_YQ_AVAILABLE = True       # Guaranteed by check_required_dependencies
-    IS_RTK_AVAILABLE = True      # Guaranteed by check_required_dependencies
+    
+    # RTK: optional, resolve absolute path
+    _rtk_path = _resolve_rtk_path()
+    if _rtk_path:
+        IS_RTK_AVAILABLE = True
+        _RTK_PATH = _rtk_path
+        managed_dir = str(Path.home() / '.local' / 'bin')
+        _RTK_MANAGED = str(Path(_rtk_path).resolve()).startswith(managed_dir)
+    else:
+        IS_RTK_AVAILABLE = False
+        _RTK_PATH = None
+        _RTK_MANAGED = False
     
     # Auto-update RTK in background (non-blocking)
+    # Will attempt install if missing, or update if managed
     threading.Thread(target=_rtk_auto_update, daemon=True, name="rtk-auto-update").start()
 
     raw_dirs = directories or [str(Path.cwd())]

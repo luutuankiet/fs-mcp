@@ -75,7 +75,8 @@ class TestRTKCompressContentMinimalFlag:
             assert warning is None
             # Verify -l minimal was passed
             cmd = mock_run.call_args[0][0]
-            assert cmd == ["rtk", "read", "-", "-l", "minimal"]
+            assert cmd[0].endswith("rtk")
+            assert cmd[1:] == ["read", "-", "-l", "minimal"]
             # Verify content was piped via stdin
             assert mock_run.call_args[1].get("input") == "original"
 
@@ -93,7 +94,8 @@ class TestRTKCompressContentMinimalFlag:
             assert content == "compressed"
             cmd = mock_run.call_args[0][0]
             # Should pass file path directly (not stdin)
-            assert cmd == ["rtk", "read", str(sample_python_file), "-l", "minimal"]
+            assert cmd[0].endswith("rtk")
+            assert cmd[1:] == ["read", str(sample_python_file), "-l", "minimal"]
             # Should NOT pipe via stdin
             assert mock_run.call_args[1].get("input") is None
 
@@ -108,7 +110,8 @@ class TestRTKCompressContentMinimalFlag:
             )
 
             cmd = mock_run.call_args[0][0]
-            assert cmd == ["rtk", "read", "-", "-l", "minimal"]
+            assert cmd[0].endswith("rtk")
+            assert cmd[1:] == ["read", "-", "-l", "minimal"]
             assert mock_run.call_args[1].get("input") == "original"
 
     def test_skips_when_rtk_unavailable(self):
@@ -139,7 +142,8 @@ class TestRTKRewriteCommand:
 
             assert result == "rtk git status"
             cmd = mock_run.call_args[0][0]
-            assert cmd == ["rtk", "rewrite", "git status"]
+            assert cmd[0].endswith("rtk")
+            assert cmd[1:] == ["rewrite", "git status"]
 
     def test_rewrite_unsupported_command(self):
         """RTK should return None for unsupported commands."""
@@ -187,7 +191,8 @@ class TestRTKAutoUpdate:
 
     def test_auto_update_installs_newer_version(self):
         """Should detect and report version change."""
-        with patch('subprocess.run') as mock_run:
+        with patch('subprocess.run') as mock_run, \
+             patch.object(server, '_resolve_rtk_path', return_value="/home/ubuntu/.local/bin/rtk"):
             # Sequence: current version, install, new version
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="rtk 0.28.0"),  # current
@@ -195,6 +200,8 @@ class TestRTKAutoUpdate:
                 MagicMock(returncode=0, stdout="rtk 0.29.0"),  # new
             ]
             server._rtk_last_update_check = None
+            server._RTK_PATH = "/home/ubuntu/.local/bin/rtk"
+            server._RTK_MANAGED = True
 
             result = server._rtk_auto_update()
 
@@ -214,13 +221,16 @@ class TestRTKAutoUpdate:
 
     def test_auto_update_already_latest(self):
         """Should return None if already at latest version."""
-        with patch('subprocess.run') as mock_run:
+        with patch('subprocess.run') as mock_run, \
+             patch.object(server, '_resolve_rtk_path', return_value="/home/ubuntu/.local/bin/rtk"):
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="rtk 0.29.0"),  # current
                 MagicMock(returncode=0, stdout="installed"),     # install
                 MagicMock(returncode=0, stdout="rtk 0.29.0"),  # same
             ]
             server._rtk_last_update_check = None
+            server._RTK_PATH = "/home/ubuntu/.local/bin/rtk"
+            server._RTK_MANAGED = True
 
             result = server._rtk_auto_update()
 
@@ -234,11 +244,13 @@ class TestRTKAutoUpdate:
                 MagicMock(returncode=1, stdout="", stderr="error"),  # install fails
             ]
             server._rtk_last_update_check = None
+            server._RTK_PATH = "/home/ubuntu/.local/bin/rtk"
+            server._RTK_MANAGED = True
 
             result = server._rtk_auto_update()
 
             assert result is not None
-            assert "failed" in result.lower()
+            assert "skipped" in result.lower() or "failed" in result.lower()
 
 
 class TestRunCommandRTKRewrite:

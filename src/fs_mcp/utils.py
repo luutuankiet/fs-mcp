@@ -119,11 +119,15 @@ def check_rtk() -> tuple[bool, str]:
     return False, install_cmd
 
 
-def check_required_dependencies() -> None:
+def check_required_dependencies() -> bool:
     """
     Check all required dependencies and exit with clear instructions if any are missing.
     
-    Required: ripgrep (rg), jq, yq
+    Required (hard): ripgrep (rg), jq, yq — server exits if missing.
+    Optional (soft): rtk — server runs without it, token-efficient mode disabled.
+    
+    Returns:
+        True if RTK is available, False if not.
     """
     missing = []
     
@@ -140,12 +144,22 @@ def check_required_dependencies() -> None:
         missing.append(('yq', 'query_yq (YAML/XML/TOML/CSV/TSV/INI/HCL)', yq_install))
     
     rtk_ok, rtk_install = check_rtk()
+    
+    # RTK is optional — enhances token efficiency but server works without it
+    # (critical for ARM/Pi where no RTK binary exists yet)
+    rtk_warning = None
     if not rtk_ok:
-        missing.append(('rtk', 'read_files/grep_content (token-efficient mode)', rtk_install))
+        rtk_warning = f"RTK not found (token-efficient mode disabled). Install: {rtk_install}"
     
     if missing:
         _print_dependency_error(missing)
         sys.exit(1)
+    
+    # Print RTK warning after hard-dependency check (so it doesn't get buried)
+    if rtk_warning:
+        print(f"\n  ⚠️  {rtk_warning}\n", file=sys.stderr)
+    
+    return rtk_ok
 
 
 def _print_dependency_error(missing: list[tuple[str, str, str]]) -> None:

@@ -266,7 +266,8 @@ class TestRTKTreeHelperFunctions:
             assert "project/" in output
 
             cmd = mock_run.call_args[0][0]
-            assert cmd[0:2] == ["rtk", "tree"]
+            assert cmd[0].endswith("rtk")
+            assert cmd[1] == "tree"
             assert "-L" in cmd
             assert "3" in cmd
             assert "-I" in cmd

@@ -184,6 +184,7 @@ class TestRTKHelperFunctions:
 
     def test_rtk_compress_content_success(self):
         """Test _rtk_compress_content with successful RTK call."""
+        server.IS_RTK_AVAILABLE = True
         with patch('subprocess.run') as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
@@ -197,6 +198,7 @@ class TestRTKHelperFunctions:
 
     def test_rtk_compress_content_failure(self):
         """Test _rtk_compress_content with RTK failure."""
+        server.IS_RTK_AVAILABLE = True
         with patch('subprocess.run') as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=1,
@@ -211,6 +213,7 @@ class TestRTKHelperFunctions:
 
     def test_rtk_compress_content_timeout(self):
         """Test _rtk_compress_content with timeout."""
+        server.IS_RTK_AVAILABLE = True
         with patch('subprocess.run') as mock_run:
             mock_run.side_effect = subprocess.TimeoutExpired(cmd="rtk", timeout=30)
             

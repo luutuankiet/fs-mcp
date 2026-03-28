@@ -272,7 +272,10 @@ def _capture_login_env() -> dict:
 
 # --- RTK (Rust Token Killer) Integration ---
 RTK_TIMEOUT_SECONDS = 30
+RTK_REWRITE_TIMEOUT = 5  # Fast: just string matching, no I/O
+RTK_UPDATE_INTERVAL_HOURS = 24  # Auto-update check interval
 RUN_COMMAND_DEFAULT_TIMEOUT = 30
+_rtk_last_update_check: Optional[float] = None  # epoch timestamp of last update check
 
 # Commands blocked from run_command for safety — matched against first token
 BLOCKED_COMMANDS = {
@@ -298,23 +301,41 @@ def _rtk_compress_content(content: str, file_path: str = "-") -> tuple[str, Opti
     """
     Pipe content through RTK for token-efficient compression.
     
+    Uses `rtk read <file> -l minimal` when a real file path is available (language
+    detection via extension), falls back to `rtk read - -l minimal` for stdin.
+    
+    Filter level 'minimal' strips comments (language-aware), collapses blank lines,
+    and normalizes whitespace — 12-60% token savings on source code.
+    
     Args:
         content: The file content to compress
-        file_path: Original file path (used for language detection hint, or "-" for stdin)
+        file_path: Original file path for language detection, or "-" for stdin
     
     Returns:
         Tuple of (compressed_content, warning_or_none)
         If RTK fails, returns original content with a warning.
     """
+    if not IS_RTK_AVAILABLE:
+        return content, None  # Silent skip — no subprocess overhead
+    
     try:
-        # RTK supports stdin via 'rtk read -'
-        result = subprocess.run(
-            ["rtk", "read", "-"],
-            input=content,
-            capture_output=True,
-            text=True,
-            timeout=RTK_TIMEOUT_SECONDS
-        )
+        # Prefer file path for language-aware compression (RTK detects language from extension)
+        # Fall back to stdin for content that doesn't map to a file (e.g., run_command output)
+        if file_path != "-" and Path(file_path).exists():
+            result = subprocess.run(
+                ["rtk", "read", file_path, "-l", "minimal"],
+                capture_output=True,
+                text=True,
+                timeout=RTK_TIMEOUT_SECONDS
+            )
+        else:
+            result = subprocess.run(
+                ["rtk", "read", "-", "-l", "minimal"],
+                input=content,
+                capture_output=True,
+                text=True,
+                timeout=RTK_TIMEOUT_SECONDS
+            )
         
         if result.returncode == 0:
             return result.stdout, None
@@ -332,6 +353,94 @@ def _rtk_compress_content(content: str, file_path: str = "-") -> tuple[str, Opti
     except Exception as e:
         warning = f"[RTK error: {e}, returning verbatim]"
         return content, warning
+
+
+
+def _rtk_rewrite_command(command: str) -> Optional[str]:
+    """
+    Ask RTK to rewrite a shell command to its token-efficient equivalent.
+    
+    Uses `rtk rewrite` which maps commands to specialized RTK subcommands:
+    - "git status" -> "rtk git status" (70% savings)
+    - "cargo test" -> "rtk cargo test" (65% savings)  
+    - "pip list" -> "rtk pip list" (60% savings)
+    - "echo hello" -> None (no RTK equivalent)
+    
+    Returns:
+        The rewritten command string, or None if RTK has no equivalent.
+    """
+    if not IS_RTK_AVAILABLE:
+        return None
+    
+    try:
+        result = subprocess.run(
+            ["rtk", "rewrite", command],
+            capture_output=True,
+            text=True,
+            timeout=RTK_REWRITE_TIMEOUT
+        )
+        
+        if result.returncode == 0:
+            rewritten = result.stdout.strip()
+            return rewritten if rewritten else None
+        else:
+            # Exit 1 = no RTK equivalent, Exit 2 = denied, Exit 3 = ask
+            return None
+            
+    except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+        return None
+
+
+def _rtk_auto_update() -> Optional[str]:
+    """
+    Check for RTK updates and install if a newer version is available.
+    
+    Runs at most once per RTK_UPDATE_INTERVAL_HOURS. Uses the official RTK
+    install script which downloads the latest release from GitHub.
+    
+    Returns:
+        Status message or None if no update was needed/attempted.
+    """
+    global _rtk_last_update_check
+    
+    now = time.time()
+    if _rtk_last_update_check and (now - _rtk_last_update_check) < (RTK_UPDATE_INTERVAL_HOURS * 3600):
+        return None  # Too soon to check again
+    
+    _rtk_last_update_check = now
+    
+    try:
+        # Get current version
+        current = subprocess.run(
+            ["rtk", "--version"],
+            capture_output=True, text=True, timeout=5
+        )
+        current_version = current.stdout.strip() if current.returncode == 0 else "unknown"
+        
+        # Run install script (idempotent — installs latest, skips if already current)
+        result = subprocess.run(
+            ["bash", "-c", "curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh"],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+        
+        if result.returncode == 0:
+            # Check new version
+            new = subprocess.run(
+                ["rtk", "--version"],
+                capture_output=True, text=True, timeout=5
+            )
+            new_version = new.stdout.strip() if new.returncode == 0 else "unknown"
+            
+            if new_version != current_version:
+                return f"RTK updated: {current_version} -> {new_version}"
+            return None  # Already latest
+        else:
+            return f"RTK update check failed (exit {result.returncode})"
+            
+    except Exception as e:
+        return f"RTK update check error: {e}"
 
 
 def _rtk_grep(pattern: str, search_path: str) -> tuple[str, Optional[str]]:
@@ -573,6 +682,9 @@ def initialize(directories: List[str], use_all_tools: bool = False):
     IS_JQ_AVAILABLE = True       # Guaranteed by check_required_dependencies
     IS_YQ_AVAILABLE = True       # Guaranteed by check_required_dependencies
     IS_RTK_AVAILABLE = True      # Guaranteed by check_required_dependencies
+    
+    # Auto-update RTK in background (non-blocking)
+    threading.Thread(target=_rtk_auto_update, daemon=True, name="rtk-auto-update").start()
 
     raw_dirs = directories or [str(Path.cwd())]
     
@@ -2305,8 +2417,20 @@ async def run_command(
 
     try:
         _shell = _get_user_shell()  # env-independent: reads $SHELL then /etc/passwd
+        
+        # Smart RTK integration: try to rewrite the command to its RTK equivalent
+        # e.g., "git status" -> "rtk git status" (70% savings)
+        # RTK subcommands run the real command internally and compress the output.
+        actual_command = command
+        rtk_rewritten = False
+        if compact:
+            rewritten = _rtk_rewrite_command(command)
+            if rewritten:
+                actual_command = rewritten
+                rtk_rewritten = True
+        
         result = subprocess.run(
-            command,
+            actual_command,
             shell=True,
             executable=_shell,
             env=LOGIN_ENV,  # full login env: nvm, pyenv, pnpm, cargo, etc.
@@ -2319,9 +2443,10 @@ async def run_command(
         stdout = result.stdout or ""
         stderr = result.stderr or ""
 
-        # RTK compress stdout if requested and there's content
+        # If RTK already handled compression via rewrite, skip post-processing.
+        # Otherwise, fall back to rtk read for generic compression.
         rtk_warning = None
-        if compact and stdout:
+        if compact and stdout and not rtk_rewritten:
             stdout, rtk_warning = _rtk_compress_content(stdout)
 
         # Build output

@@ -44,9 +44,9 @@ FROM deps AS test
 COPY . /app/
 ENV PATH="$PATH:/root/.local/bin"
 
-# Install fs-mcp
+# Install fs-mcp + test deps
 RUN pip install --no-cache-dir uv 2>/dev/null && \
-    uv pip install --system -e "." 2>/dev/null || pip install --no-cache-dir -e "."
+    uv pip install --system -e "." pytest pytest-asyncio 2>/dev/null || pip install --no-cache-dir -e "." pytest pytest-asyncio
 
 # Dependency check (should not exit(1) even without RTK)
 COPY scripts/docker-dep-check.py /tmp/dep-check.py

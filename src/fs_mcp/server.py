@@ -7,7 +7,7 @@ import mimetypes
 import fnmatch
 from pathlib import Path
 from typing import List, Optional, Literal, Dict, Annotated, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pydantic import BaseModel, Field
 from fastmcp import FastMCP
@@ -16,11 +16,14 @@ import time
 import sys
 import urllib.request
 import urllib.error
+import shlex
 import shutil
 import subprocess
+import signal
 import threading
 import duckdb
 import math
+import uuid as _uuid
 
 from .edit_tool import EditResult, RooStyleEditTool, propose_and_review_logic, apply_file_edits, MATCH_TEXT_MAX_LENGTH
 from .utils import check_ripgrep, check_jq, check_yq, check_rtk, check_required_dependencies
@@ -1139,7 +1142,7 @@ def read_files(
     ] = False,
     compact: Annotated[
         bool,
-        Field(default=True, description="Token-efficient mode via RTK compression. DEFAULT=True returns compressed content (comments stripped, whitespace normalized, 60-90%% token savings). Set compact=False for VERBATIM content when preparing propose_and_review edits (exact match_text required).")
+        Field(default=True, description="Compressed output (comments stripped, whitespace normalized, 60-90%% token savings). Set False for VERBATIM content when preparing edits (exact match_text required).")
     ] = True
 ) -> str:
     """
@@ -2043,7 +2046,7 @@ def grep_content(
     ] = None,
     compact: Annotated[
         bool,
-        Field(default=True, description="Token-efficient mode via RTK grep. DEFAULT=True returns grouped results (70-80%% token savings). Set compact=False for full ripgrep output with section end hints (needed for precise line targeting).")
+        Field(default=True, description="Compressed grouped results (70-80%% token savings). Set False for full ripgrep output with section end hints (needed for precise line targeting).")
     ] = True
 ) -> str:
     """
@@ -2494,53 +2497,15 @@ def analyze_gsd_work_log(
 def list_gsd_lite_dirs(
     max_depth: Annotated[
         int,
-        Field(
-            default=15,
-            description="Maximum directory depth to search. Default 15."
-        )
+        Field(default=15, description="Max directory depth. Default 15.")
     ] = 15,
     include_meta: Annotated[
         bool,
-        Field(
-            default=True,
-            description="Include PROJECT.md content (~5 lines) to help agents match natural-language project descriptions to paths."
-        )
+        Field(default=True, description="Include PROJECT.md summary to match natural-language descriptions to paths.")
     ] = True
 ) -> str:
-    """
-    List all gsd-lite/ directories found in the server's allowed directories.
-
-    Returns paths and optional metadata to help agents route natural-language
-    project references (e.g. "the tableau migration project") to exact paths.
-
-    **Strategy:** Uses ripgrep (fast, respects .gitignore) to find gsd-lite/PROJECT.md
-    files, then derives directory paths. Falls back to Python os.walk if ripgrep
-    is unavailable or fails.
-
-    **Noise filtering:** Automatically skips:
-    - node_modules, .venv, __pycache__, .git, .cache, .npm
-    - test/eval fixture directories (tests/evals/)
-    - template directories (template/gsd-lite)
-    - .opencode/command/ copies
-
-    **Output (include_meta=True):**
-    ```
-    fs-mcp/gsd-lite
-      A universal, provider-agnostic filesystem MCP server designed for AI agents.
-      It acts as a "smart driver" for remote codebases, providing efficient access
-      patterns (grep -> read), structured data querying, and safe editing workflows.
-
-    ticktick_dbt/gsd-lite
-      A personal data platform for GTD-driven life decisions. Extracts task data
-      from TickTick and Todoist into a dbt warehouse for analysis.
-    ```
-
-    **Output (include_meta=False):**
-    ```
-    fs-mcp/gsd-lite
-    ticktick_dbt/gsd-lite
-    ```
-    """
+    """Find gsd-lite project directories. Returns paths + optional metadata so agents can map
+    natural-language project references (e.g. 'the tableau migration') to exact filesystem paths."""
     import time as _time
     start = _time.monotonic()
     TIMEOUT_SECONDS = 30
@@ -2841,48 +2806,52 @@ def _validate_command_safety(command: str) -> Optional[str]:
     return None
 
 
+# --- Background Job Directory ---
+_BG_JOB_DIR = Path(tempfile.gettempdir()) / "fs-mcp-jobs"
+
+
+def _ensure_job_dir() -> Path:
+    """Create background job directory if it doesn't exist."""
+    _BG_JOB_DIR.mkdir(parents=True, exist_ok=True)
+    return _BG_JOB_DIR
+
+
 @mcp.tool()
 async def run_command(
     command: Annotated[
         str,
-        Field(description="Shell command to execute. Supports pipes, redirects, &&, ||, etc. "
-              "Runs in /bin/bash. Destructive commands (rm, kill, shutdown, etc.) are blocked.")
+        Field(description="Shell command. Supports pipes, redirects, &&, ||. "
+              "Blocked: rm, kill, shutdown, reboot, dd, mkfs. "
+              "Also blocked: writes to /dev/ (e.g. > /dev/null).")
     ],
     working_dir: Annotated[
         str,
-        Field(default=".", description="Working directory for the command. Must be within allowed directories. "
-              "Defaults to server root.")
+        Field(default=".", description="Working directory. Must be within allowed dirs.")
     ] = ".",
     timeout: Annotated[
         int,
-        Field(default=30, description="Timeout in seconds. Default 30. Increase for builds/tests.")
+        Field(default=30, description="Timeout in seconds (1-600). Default 30.")
     ] = 30,
     compact: Annotated[
         bool,
-        Field(default=True, description="When true, pipe stdout through RTK for token-efficient compression. "
-              "Set false for exact output (e.g., diffs, error debugging).")
+        Field(default=True, description="Pipe stdout through RTK for token compression. False for exact output.")
     ] = True,
+    background: Annotated[
+        bool,
+        Field(default=False, description="Run in background, return immediately with job handle. "
+              "Use for commands expected to exceed 100s (docker build/compose, large compilations, "
+              "test suites, database migrations). Returns {job_id, pid, log_path} — "
+              "check progress via read_files on log_path.")
+    ] = False,
 ) -> str:
     """Run a shell command on the remote host.
 
-    **Use cases:** build, test, lint, git, package managers, dev servers, curl, etc.
-    **Blocked:** rm, kill, shutdown, reboot, dd, mkfs, and other destructive commands.
+    Commands run in isolated process groups — on timeout, the entire process tree
+    is cleaned up (no orphaned children).
 
-    **Examples:**
-    - Build: `run_command(command="make build")`
-    - Test: `run_command(command="pytest -x tests/", timeout=120)`
-    - Git: `run_command(command="git status && git log --oneline -5")`
-    - Install: `run_command(command="pip install -e '.[dev]'")`
-    - Chain: `run_command(command="cd src && grep -r 'TODO' . | wc -l")`
-
-    **Output format:**
-    ```
-    [exit_code: 0]
-    [stdout]
-    ... (RTK-compressed if compact=true)
-    [stderr]
-    ...
-    ```
+    **background=True:** Returns immediately with a job handle. Output streams to
+    a log file you can read anytime. Use for long-running tasks that would exceed
+    the proxy timeout (~100s).
     """
     # Safety check
     safety_error = _validate_command_safety(command)
@@ -2900,12 +2869,51 @@ async def run_command(
     # Cap timeout
     timeout = min(max(timeout, 1), 600)  # 1s to 10min
 
+    _shell = _get_user_shell()
+
+    # --- Background mode: nohup + return handle ---
+    if background:
+        job_dir = _ensure_job_dir()
+        job_id = f"fsmcp-{_uuid.uuid4().hex[:8]}"
+        log_path = job_dir / f"{job_id}.log"
+
+        bg_command = f"nohup {_shell} -c {shlex.quote(command)} > {log_path} 2>&1 & echo $!"
+
+        try:
+            result = subprocess.run(
+                bg_command,
+                shell=True,
+                executable=_shell,
+                env=LOGIN_ENV,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                cwd=str(cwd),
+                start_new_session=True,
+            )
+            pid_str = result.stdout.strip().split('\n')[-1]
+            pid = int(pid_str) if pid_str.isdigit() else -1
+
+            try:
+                pgid = os.getpgid(pid) if pid > 0 else -1
+            except (ProcessLookupError, PermissionError):
+                pgid = -1
+
+            return json.dumps({
+                "job_id": job_id,
+                "pid": pid,
+                "pgid": pgid,
+                "log_path": str(log_path),
+                "command": command[:200],
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "message": f"Command running in background. Read {log_path} for progress. "
+                           f"Check status: run_command('ps -o pid,pgid,stat,cmd -p {pid}')"
+            })
+        except Exception as e:
+            return f"Error launching background job: {e}"
+
+    # --- Foreground mode: blocking with process group isolation ---
     try:
-        _shell = _get_user_shell()  # env-independent: reads $SHELL then /etc/passwd
-        
-        # Smart RTK integration: try to rewrite the command to its RTK equivalent
-        # e.g., "git status" -> "rtk git status" (70% savings)
-        # RTK subcommands run the real command internally and compress the output.
         actual_command = command
         rtk_rewritten = False
         if compact:
@@ -2913,29 +2921,56 @@ async def run_command(
             if rewritten:
                 actual_command = rewritten
                 rtk_rewritten = True
-        
-        result = subprocess.run(
+
+        proc = subprocess.Popen(
             actual_command,
             shell=True,
             executable=_shell,
-            env=LOGIN_ENV,  # full login env: nvm, pyenv, pnpm, cargo, etc.
-            capture_output=True,
+            env=LOGIN_ENV,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
             cwd=str(cwd),
+            start_new_session=True,
         )
 
-        stdout = result.stdout or ""
-        stderr = result.stderr or ""
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
 
-        # If RTK already handled compression via rewrite, skip post-processing.
-        # Otherwise, fall back to rtk read for generic compression.
+        except subprocess.TimeoutExpired:
+            # Kill the ENTIRE process group, not just the shell
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                proc.wait(timeout=2)
+
+            partial = ""
+            try:
+                out, _ = proc.communicate(timeout=1)
+                if out:
+                    partial = f"\n[partial stdout]\n{out[:2000]}"
+            except Exception:
+                pass
+            return f"Error: Command timed out after {timeout}s. Process group killed.{partial}"
+
+        stdout = stdout or ""
+        stderr = stderr or ""
+
+        # RTK compression (skip if RTK already handled via rewrite)
         rtk_warning = None
         if compact and stdout and not rtk_rewritten:
             stdout, rtk_warning = _rtk_compress_content(stdout)
 
         # Build output
-        parts = [f"[exit_code: {result.returncode}]"]
+        parts = [f"[exit_code: {proc.returncode}]"]
         if rtk_warning:
             parts.append(f"[rtk: {rtk_warning}]")
         if stdout:
@@ -2947,10 +2982,5 @@ async def run_command(
 
         return "\n".join(parts)
 
-    except subprocess.TimeoutExpired as e:
-        partial = ""
-        if e.stdout:
-            partial = f"\n[partial stdout]\n{e.stdout[:2000]}"
-        return f"Error: Command timed out after {timeout}s.{partial}"
     except Exception as e:
         return f"Error running command: {e}"

@@ -28,21 +28,32 @@ jobs:
           python -m pip install --upgrade pip
           pip install python-semantic-release build
 
-      - name: Release and Build
+      - name: Semantic Release Version
         id: release_step
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 1. Update version, commit, and tag
-          semantic-release version
-          
-          # 2. Build the package (using the updated version)
-          python -m build
-          
-          # 3. Create the GitHub Release
-          semantic-release publish
+          OUTPUT=$(semantic-release version 2>&1) || true
+          echo "$OUTPUT"
+          if echo "$OUTPUT" | grep -qiE "no release will be made|no commit"; then
+            echo "released=false" >> "$GITHUB_OUTPUT"
+            echo "⏭️ No releasable commits — skipping build+publish."
+          else
+            echo "released=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build Package
+        if: steps.release_step.outputs.released == 'true'
+        run: python -m build
+
+      - name: GitHub Release
+        if: steps.release_step.outputs.released == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: semantic-release publish
 
       - name: Publish to PyPI
+        if: steps.release_step.outputs.released == 'true'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           password: ${{ secrets.PYPI_TOKEN }}

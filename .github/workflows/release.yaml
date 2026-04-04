@@ -1,12 +1,8 @@
-name: Publish to pypi
+name: Publish to PyPI
 on:
   push:
-    branches:
-      - main
-  pull_request:
-    branches: 
-      - main
-  workflow_dispatch:
+    tags:
+      - 'v*'
 
 jobs:
   build-and-publish:
@@ -16,45 +12,10 @@ jobs:
       contents: write
       id-token: write
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: Install Release Tools
-        run: |
-          python -m pip install --upgrade pip
-          pip install python-semantic-release build
-
-      - name: Semantic Release Version
-        id: release_step
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          OUTPUT=$(semantic-release version 2>&1) || true
-          echo "$OUTPUT"
-          if echo "$OUTPUT" | grep -qiE "no release will be made|no commit"; then
-            echo "released=false" >> "$GITHUB_OUTPUT"
-            echo "⏭️ No releasable commits — skipping build+publish."
-          else
-            echo "released=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Build Package
-        if: steps.release_step.outputs.released == 'true'
-        run: python -m build
-
-      - name: GitHub Release
-        if: steps.release_step.outputs.released == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: semantic-release publish
-
-      - name: Publish to PyPI
-        if: steps.release_step.outputs.released == 'true'
-        uses: pypa/gh-action-pypi-publish@release/v1
+      - run: pip install build
+      - run: python -m build
+      - uses: pypa/gh-action-pypi-publish@release/v1

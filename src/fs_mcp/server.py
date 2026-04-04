@@ -2503,7 +2503,7 @@ def list_gsd_lite_dirs(
         bool,
         Field(
             default=True,
-            description="Include metadata (PROJECT.md first line, which artifacts exist) to help agents match natural-language project descriptions to paths."
+            description="Include PROJECT.md content (~5 lines) to help agents match natural-language project descriptions to paths."
         )
     ] = True
 ) -> str:
@@ -2526,12 +2526,13 @@ def list_gsd_lite_dirs(
     **Output (include_meta=True):**
     ```
     fs-mcp/gsd-lite
-      PROJECT: fs-mcp — universal filesystem MCP server for AI agents
-      artifacts: PROJECT.md, WORK.md, ARCHITECTURE.md
+      A universal, provider-agnostic filesystem MCP server designed for AI agents.
+      It acts as a "smart driver" for remote codebases, providing efficient access
+      patterns (grep -> read), structured data querying, and safe editing workflows.
 
     ticktick_dbt/gsd-lite
-      PROJECT: ticktick_dbt — dbt project for TickTick data
-      artifacts: PROJECT.md, WORK.md
+      A personal data platform for GTD-driven life decisions. Extracts task data
+      from TickTick and Todoist into a dbt warehouse for analysis.
     ```
 
     **Output (include_meta=False):**
@@ -2544,7 +2545,7 @@ def list_gsd_lite_dirs(
     start = _time.monotonic()
     TIMEOUT_SECONDS = 30
 
-    GSD_ARTIFACT_FILES = ["PROJECT.md", "WORK.md", "ARCHITECTURE.md", "HISTORY.md", "INBOX.md"]
+    MAX_SUMMARY_LINES = 5
     SKIP_PATTERNS = {
         "node_modules", ".venv", "__pycache__", ".git", ".cache", ".npm",
         "venv", "site-packages", ".tox", "dist", "build",
@@ -2560,30 +2561,35 @@ def list_gsd_lite_dirs(
     def _is_noise(path_str: str) -> bool:
         return any(frag in path_str for frag in NOISE_PATH_FRAGMENTS)
 
-    def _get_project_summary(gsd_dir: Path) -> str:
-        """Read first non-empty content line of PROJECT.md for natural-language matching."""
+    def _get_project_summary(gsd_dir: Path) -> list[str]:
+        """Read first ~5 content lines of PROJECT.md for natural-language matching."""
         project_md = gsd_dir / "PROJECT.md"
         if not project_md.exists():
-            return "(no PROJECT.md)"
+            return ["(no PROJECT.md)"]
         try:
+            content_lines: list[str] = []
             with open(project_md, "r", encoding="utf-8") as f:
                 for line in f:
-                    line = line.strip()
+                    stripped = line.strip()
                     # Skip markdown headers, blank lines, metadata
-                    if line and not line.startswith("#") and not line.startswith("*Initialized"):
-                        return line[:120]
-                # If only headers found, use the first header
-                f.seek(0)
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("# "):
-                        return line[2:].strip()[:120]
+                    if not stripped or stripped.startswith("#") or stripped.startswith("*Initialized"):
+                        continue
+                    # Skip section markers like ## What This Is
+                    if stripped.startswith("## "):
+                        continue
+                    content_lines.append(stripped)
+                    if len(content_lines) >= MAX_SUMMARY_LINES:
+                        break
+            if not content_lines:
+                # Fallback: use the first header
+                with open(project_md, "r", encoding="utf-8") as f:
+                    for line in f:
+                        stripped = line.strip()
+                        if stripped.startswith("# "):
+                            return [stripped[2:].strip()]
+            return content_lines if content_lines else ["(empty)"]
         except Exception:
-            pass
-        return "(unreadable)"
-
-    def _list_artifacts(gsd_dir: Path) -> list[str]:
-        return [name for name in GSD_ARTIFACT_FILES if (gsd_dir / name).exists()]
+            return ["(unreadable)"]
 
     def _try_ripgrep() -> bool:
         """Try to find gsd-lite dirs via ripgrep. Returns True if successful."""
@@ -2682,10 +2688,9 @@ def list_gsd_lite_dirs(
     for d in found_dirs:
         lines.append(d["path"])
         if include_meta:
-            summary = _get_project_summary(d["abs"])
-            artifacts = _list_artifacts(d["abs"])
-            lines.append(f"  PROJECT: {summary}")
-            lines.append(f"  artifacts: {', '.join(artifacts)}")
+            summary_lines = _get_project_summary(d["abs"])
+            for sl in summary_lines:
+                lines.append(f"  {sl}")
             lines.append("")
 
     return "\n".join(lines)

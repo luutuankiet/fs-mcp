@@ -28,7 +28,7 @@ from .gsd_lite_analyzer import analyze_gsd_logs
 from .gemini_compat import make_gemini_compatible
 
 # --- Token threshold for large file warnings (conservative to enforce grep->read workflow) ---
-LARGE_FILE_TOKEN_THRESHOLD = 2000
+LARGE_FILE_TOKEN_THRESHOLD = 20000
 
 # --- Dynamic Field Descriptions (using imported constants) ---
 MATCH_TEXT_DESCRIPTION = f"""The EXACT text to find and replace (LITERAL, not regex).
@@ -699,6 +699,7 @@ CORE_TOOLS = {
     "query_duckdb",
     "run_command",
     "check_dependencies",
+    "list_gsd_lite_dirs",
 }
 
 # Tools excluded from core tier (available with --all)
@@ -2488,6 +2489,207 @@ def analyze_gsd_work_log(
     except Exception as e:
         return f"Error analyzing file: {str(e)}"
     
+
+@mcp.tool()
+def list_gsd_lite_dirs(
+    max_depth: Annotated[
+        int,
+        Field(
+            default=15,
+            description="Maximum directory depth to search. Default 15."
+        )
+    ] = 15,
+    include_meta: Annotated[
+        bool,
+        Field(
+            default=True,
+            description="Include metadata (PROJECT.md first line, which artifacts exist) to help agents match natural-language project descriptions to paths."
+        )
+    ] = True
+) -> str:
+    """
+    List all gsd-lite/ directories found in the server's allowed directories.
+
+    Returns paths and optional metadata to help agents route natural-language
+    project references (e.g. "the tableau migration project") to exact paths.
+
+    **Strategy:** Uses ripgrep (fast, respects .gitignore) to find gsd-lite/PROJECT.md
+    files, then derives directory paths. Falls back to Python os.walk if ripgrep
+    is unavailable or fails.
+
+    **Noise filtering:** Automatically skips:
+    - node_modules, .venv, __pycache__, .git, .cache, .npm
+    - test/eval fixture directories (tests/evals/)
+    - template directories (template/gsd-lite)
+    - .opencode/command/ copies
+
+    **Output (include_meta=True):**
+    ```
+    fs-mcp/gsd-lite
+      PROJECT: fs-mcp — universal filesystem MCP server for AI agents
+      artifacts: PROJECT.md, WORK.md, ARCHITECTURE.md
+
+    ticktick_dbt/gsd-lite
+      PROJECT: ticktick_dbt — dbt project for TickTick data
+      artifacts: PROJECT.md, WORK.md
+    ```
+
+    **Output (include_meta=False):**
+    ```
+    fs-mcp/gsd-lite
+    ticktick_dbt/gsd-lite
+    ```
+    """
+    import time as _time
+    start = _time.monotonic()
+    TIMEOUT_SECONDS = 30
+
+    GSD_ARTIFACT_FILES = ["PROJECT.md", "WORK.md", "ARCHITECTURE.md", "HISTORY.md", "INBOX.md"]
+    SKIP_PATTERNS = {
+        "node_modules", ".venv", "__pycache__", ".git", ".cache", ".npm",
+        "venv", "site-packages", ".tox", "dist", "build",
+    }
+    NOISE_PATH_FRAGMENTS = {
+        "tests/evals/", "template/gsd-lite", ".opencode/command/",
+        "wt-npm/", "/persistent/home/",  # docker mirrors
+        "wheels-v5",  # uv/pip cache
+    }
+
+    found_dirs: list[dict] = []
+
+    def _is_noise(path_str: str) -> bool:
+        return any(frag in path_str for frag in NOISE_PATH_FRAGMENTS)
+
+    def _get_project_summary(gsd_dir: Path) -> str:
+        """Read first non-empty content line of PROJECT.md for natural-language matching."""
+        project_md = gsd_dir / "PROJECT.md"
+        if not project_md.exists():
+            return "(no PROJECT.md)"
+        try:
+            with open(project_md, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    # Skip markdown headers, blank lines, metadata
+                    if line and not line.startswith("#") and not line.startswith("*Initialized"):
+                        return line[:120]
+                # If only headers found, use the first header
+                f.seek(0)
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("# "):
+                        return line[2:].strip()[:120]
+        except Exception:
+            pass
+        return "(unreadable)"
+
+    def _list_artifacts(gsd_dir: Path) -> list[str]:
+        return [name for name in GSD_ARTIFACT_FILES if (gsd_dir / name).exists()]
+
+    def _try_ripgrep() -> bool:
+        """Try to find gsd-lite dirs via ripgrep. Returns True if successful."""
+        rg_binary = shutil.which('rg')
+        if not rg_binary:
+            return False
+
+        # Verify it's real ripgrep, not a grep wrapper
+        try:
+            ver_result = subprocess.run(
+                [rg_binary, '--version'],
+                capture_output=True, text=True, timeout=5
+            )
+            if 'ripgrep' not in ver_result.stdout.lower():
+                return False
+        except Exception:
+            return False
+
+        for base_dir in ALLOWED_DIRS:
+            if _time.monotonic() - start > TIMEOUT_SECONDS:
+                break
+            try:
+                result = subprocess.run(
+                    [
+                        rg_binary, '--files',
+                        '--glob', '**/gsd-lite/PROJECT.md',
+                        f'--max-depth={max_depth}',
+                        '--no-ignore',  # don't skip gitignored dirs
+                        str(base_dir)
+                    ],
+                    capture_output=True, text=True, timeout=TIMEOUT_SECONDS,
+                    check=False
+                )
+                for line in result.stdout.strip().split('\n'):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    p = Path(line)
+                    gsd_dir = p.parent  # strip PROJECT.md to get gsd-lite/
+                    try:
+                        rel = str(gsd_dir.relative_to(base_dir))
+                    except ValueError:
+                        rel = str(gsd_dir)
+                    if not _is_noise(rel):
+                        found_dirs.append({"path": rel, "abs": gsd_dir})
+            except (subprocess.TimeoutExpired, Exception):
+                continue
+        return len(found_dirs) > 0
+
+    def _try_python_walk() -> None:
+        """Fallback: os.walk with skip-list."""
+        for base_dir in ALLOWED_DIRS:
+            for root, dirs, files in os.walk(base_dir):
+                if _time.monotonic() - start > TIMEOUT_SECONDS:
+                    return
+                # Depth check
+                depth = str(root).replace(str(base_dir), '').count(os.sep)
+                if depth > max_depth:
+                    dirs.clear()
+                    continue
+                # Prune junk
+                dirs[:] = [d for d in dirs if d not in SKIP_PATTERNS]
+
+                current = Path(root)
+                if current.name == "gsd-lite" and (current / "PROJECT.md").exists():
+                    try:
+                        rel = str(current.relative_to(base_dir))
+                    except ValueError:
+                        rel = str(current)
+                    if not _is_noise(rel):
+                        found_dirs.append({"path": rel, "abs": current})
+                    dirs.clear()  # don't recurse into gsd-lite/
+
+    # --- Execution ---
+    rg_used = _try_ripgrep()
+    if not rg_used:
+        _try_python_walk()
+
+    if not found_dirs:
+        return "No gsd-lite directories found."
+
+    # Deduplicate by path
+    seen = set()
+    unique = []
+    for d in found_dirs:
+        if d["path"] not in seen:
+            seen.add(d["path"])
+            unique.append(d)
+    found_dirs = sorted(unique, key=lambda x: x["path"])
+
+    elapsed = _time.monotonic() - start
+    method = "ripgrep" if rg_used else "os.walk"
+    header = f"Found {len(found_dirs)} gsd-lite project(s) [{method}, {elapsed:.1f}s]"
+
+    lines = [header, ""]
+    for d in found_dirs:
+        lines.append(d["path"])
+        if include_meta:
+            summary = _get_project_summary(d["abs"])
+            artifacts = _list_artifacts(d["abs"])
+            lines.append(f"  PROJECT: {summary}")
+            lines.append(f"  artifacts: {', '.join(artifacts)}")
+            lines.append("")
+
+    return "\n".join(lines)
+
 
 @mcp.tool()
 def query_duckdb(

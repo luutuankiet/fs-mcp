@@ -2634,7 +2634,7 @@ def list_gsd_lite_dirs(
                     except ValueError:
                         rel = str(gsd_dir)
                     if not _is_noise(rel):
-                        found_dirs.append({"path": rel, "abs": gsd_dir})
+                        found_dirs.append({"path": rel, "abs": str(gsd_dir)})
             except (subprocess.TimeoutExpired, Exception):
                 continue
         return len(found_dirs) > 0
@@ -2660,7 +2660,7 @@ def list_gsd_lite_dirs(
                     except ValueError:
                         rel = str(current)
                     if not _is_noise(rel):
-                        found_dirs.append({"path": rel, "abs": current})
+                        found_dirs.append({"path": rel, "abs": str(current)})
                     dirs.clear()  # don't recurse into gsd-lite/
 
     # --- Execution ---
@@ -2686,9 +2686,9 @@ def list_gsd_lite_dirs(
 
     lines = [header, ""]
     for d in found_dirs:
-        lines.append(d["path"])
+        lines.append(f"{d['abs']}")
         if include_meta:
-            summary_lines = _get_project_summary(d["abs"])
+            summary_lines = _get_project_summary(Path(d["abs"]))
             for sl in summary_lines:
                 lines.append(f"  {sl}")
             lines.append("")

@@ -16,3 +16,5 @@ uv.lockvenv/
 
 tmp
 _test_*.py
+# GSD-Lite project management artifacts (local only)
+gsd-lite/

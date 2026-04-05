@@ -2215,7 +2215,7 @@ def query_jq(
     ],
     timeout: Annotated[
         int,
-        Field(default=30, description="Query timeout in seconds. Default is 30. Increase for complex queries on large files.")
+        Field(default=30, description="Query timeout in seconds. Increase for complex queries on large files.")
     ] = 30
 ) -> str:
     """
@@ -2313,7 +2313,7 @@ def query_yq(
     ] = "yaml",
     timeout: Annotated[
         int,
-        Field(default=30, description="Query timeout in seconds. Default is 30. Increase for complex queries on large files.")
+        Field(default=30, description="Query timeout in seconds. Increase for complex queries on large files.")
     ] = 30
 ) -> str:
     """
@@ -2411,7 +2411,7 @@ def analyze_gsd_work_log(
         str,
         Field(
             default="gsd-lite/WORK.md",
-            description="Path to the GSD-Lite WORK.md file. Defaults to 'gsd-lite/WORK.md'."
+            description="Path to the GSD-Lite WORK.md file."
         )
     ] = "gsd-lite/WORK.md",
     output_format: Annotated[
@@ -2497,7 +2497,7 @@ def analyze_gsd_work_log(
 def list_gsd_lite_dirs(
     max_depth: Annotated[
         int,
-        Field(default=15, description="Max directory depth. Default 15.")
+        Field(default=15, description="Max directory depth.")
     ] = 15,
     include_meta: Annotated[
         bool,
@@ -2677,7 +2677,7 @@ def query_duckdb(
     ],
     timeout: Annotated[
         int,
-        Field(default=30, description="Query timeout in seconds. Default is 30. Increase for complex queries on large files.")
+        Field(default=30, description="Query timeout in seconds. Increase for complex queries on large files.")
     ] = 30
 ) -> str:
     """
@@ -2830,7 +2830,7 @@ async def run_command(
     ] = ".",
     timeout: Annotated[
         int,
-        Field(default=30, description="Timeout in seconds (1-600). Default 30.")
+        Field(default=30, description="Timeout in seconds (1-600).")
     ] = 30,
     compact: Annotated[
         bool,

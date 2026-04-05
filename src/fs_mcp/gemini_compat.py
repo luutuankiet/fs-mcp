@@ -94,6 +94,9 @@ def make_gemini_compatible(schema: dict) -> dict:
     # Phase 5: Handle exclusive bounds
     result = _handle_exclusive_bounds(result)
     
+    # Phase 5.5: Preserve default values in descriptions before they get stripped
+    result = _preserve_defaults_in_description(result)
+    
     # Phase 6: Remove forbidden keys
     result = _remove_forbidden_keys(result)
     
@@ -300,6 +303,55 @@ def _remove_conditional_schemas(schema: dict) -> dict:
         return result
     
     return process_node(schema)
+
+
+def _preserve_defaults_in_description(schema: dict) -> dict:
+    """Inject default values into description strings before Phase 6 strips them.
+    
+    Since 'default' is in _FORBIDDEN_KEYS (Gemini doesn't support it),
+    we preserve the information by appending '(Default: <value>)' to each
+    property's description. This makes defaults visible to all LLM clients
+    without breaking Gemini schema compatibility.
+    """
+    def process_node(node: Any) -> Any:
+        if not isinstance(node, dict):
+            return node
+        result = {}
+        for key, value in node.items():
+            if key == "properties" and isinstance(value, dict):
+                result["properties"] = {
+                    k: _inject_default_to_desc(v) for k, v in value.items()
+                }
+            elif isinstance(value, dict):
+                result[key] = process_node(value)
+            elif isinstance(value, list):
+                result[key] = [
+                    process_node(v) if isinstance(v, dict) else v
+                    for v in value
+                ]
+            else:
+                result[key] = value
+        return result
+    return process_node(schema)
+
+
+def _inject_default_to_desc(prop: dict) -> dict:
+    """Append default value to a property's description if present."""
+    if not isinstance(prop, dict) or "default" not in prop:
+        return prop
+    result = dict(prop)
+    default_val = result["default"]
+    desc = result.get("description", "")
+    if isinstance(default_val, str):
+        default_repr = f"'{default_val}'"
+    elif isinstance(default_val, bool):
+        default_repr = str(default_val).lower()
+    elif default_val is None:
+        default_repr = "null"
+    else:
+        default_repr = str(default_val)
+    result["description"] = f"{desc} (Default: {default_repr})".strip()
+    return result
 
 
 # ============== Helper Functions ==============

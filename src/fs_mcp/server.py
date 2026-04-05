@@ -339,15 +339,19 @@ def _rtk_compress_content(content: str, file_path: str = "-") -> tuple[str, Opti
     """
     Pipe content through RTK for token-efficient compression.
     
-    Uses `rtk read <file> -l minimal` when a real file path is available (language
-    detection via extension), falls back to `rtk read - -l minimal` for stdin.
+    Writes content to a temp file (preserving original extension for language
+    detection), runs `rtk read <tmp> -l minimal`, then cleans up.
+    
+    This avoids a bug where passing the original file path to RTK would
+    re-read the entire file from disk, ignoring any line-range slicing
+    that was already applied to `content`.
     
     Filter level 'minimal' strips comments (language-aware), collapses blank lines,
     and normalizes whitespace — 12-60% token savings on source code.
     
     Args:
-        content: The file content to compress
-        file_path: Original file path for language detection, or "-" for stdin
+        content: The file content to compress (may be a slice of the original file)
+        file_path: Original file path for extension-based language detection, or "-" for stdin
     
     Returns:
         Tuple of (compressed_content, warning_or_none)
@@ -356,24 +360,27 @@ def _rtk_compress_content(content: str, file_path: str = "-") -> tuple[str, Opti
     if not IS_RTK_AVAILABLE:
         return content, None  # Silent skip — no subprocess overhead
     
+    tmp_path = None
     try:
-        # Prefer file path for language-aware compression (RTK detects language from extension)
-        # Fall back to stdin for content that doesn't map to a file (e.g., run_command output)
-        if file_path != "-" and Path(file_path).exists():
-            result = subprocess.run(
-                [_RTK_PATH, "read", file_path, "-l", "minimal"],
-                capture_output=True,
-                text=True,
-                timeout=RTK_TIMEOUT_SECONDS
-            )
-        else:
-            result = subprocess.run(
-                [_RTK_PATH, "read", "-", "-l", "minimal"],
-                input=content,
-                capture_output=True,
-                text=True,
-                timeout=RTK_TIMEOUT_SECONDS
-            )
+        # Write content to a temp file with the original extension so RTK
+        # can detect the language from the suffix (it has no --lang flag).
+        # This ensures sliced content is what RTK actually processes,
+        # rather than re-reading the full original file from disk.
+        ext = Path(file_path).suffix if file_path != "-" else ""
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=ext, prefix="rtk_")
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as tmp_f:
+                tmp_f.write(content)
+        except Exception:
+            os.close(tmp_fd)
+            raise
+
+        result = subprocess.run(
+            [_RTK_PATH, "read", tmp_path, "-l", "minimal"],
+            capture_output=True,
+            text=True,
+            timeout=RTK_TIMEOUT_SECONDS
+        )
         
         if result.returncode == 0:
             return result.stdout, None
@@ -391,6 +398,12 @@ def _rtk_compress_content(content: str, file_path: str = "-") -> tuple[str, Opti
     except Exception as e:
         warning = f"[RTK error: {e}, returning verbatim]"
         return content, warning
+    finally:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 

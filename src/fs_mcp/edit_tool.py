@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 # --- Configuration Constants ---
-MATCH_TEXT_MAX_LENGTH = 2000
+MATCH_TEXT_MAX_LENGTH = 15000
 NEW_STRING_MAX_LENGTH = 5_000_000  # 5MB - prevent OOM from huge replacements
 MAX_FILE_SIZE = 50_000_000  # 50MB - prevent OOM from reading huge files
 # Token-efficient error hint threshold - we NEVER dump full file content

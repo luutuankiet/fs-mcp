@@ -30,7 +30,7 @@ jobs:
           github.event.inputs.platform == 'both' && '["linux/amd64", "linux/arm64"]' ||
           github.event.inputs.platform == 'amd64' && '["linux/amd64"]' ||
           '["linux/arm64"]'
-        ) }}
+          ) }}
     steps:
       # 1. Checkout the repo so Dockerfile.test is available
       - uses: actions/checkout@v4

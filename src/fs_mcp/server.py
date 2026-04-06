@@ -2514,11 +2514,15 @@ def list_gsd_lite_dirs(
     ] = 15,
     include_meta: Annotated[
         bool,
-        Field(default=True, description="Include PROJECT.md summary to match natural-language descriptions to paths.")
+        Field(default=True, description="Include PROJECT.md summary and last_modified timestamp to match natural-language descriptions to paths.")
     ] = True
 ) -> str:
     """Find gsd-lite project directories. Returns paths + optional metadata so agents can map
-    natural-language project references (e.g. 'the tableau migration') to exact filesystem paths."""
+    natural-language project references (e.g. 'the tableau migration') to exact filesystem paths.
+
+    When include_meta=True, each result includes:
+    - last_modified: UTC ISO 8601 timestamp of most recent activity (WORK.md mtime, fallback to newest file)
+    - PROJECT.md summary lines for natural-language matching"""
     import time as _time
     start = _time.monotonic()
     TIMEOUT_SECONDS = 30
@@ -2533,11 +2537,49 @@ def list_gsd_lite_dirs(
         "wt-npm/", "/persistent/home/",  # docker mirrors
         "wheels-v5",  # uv/pip cache
     }
+    # Heavy paths that never contain gsd-lite projects — skip on root-mounted servers (#28)
+    HEAVY_PATH_EXCLUDES = {
+        "proc", "sys", "dev", "run", "snap", "tmp",
+        "srv/dev-disk-by-uuid", "srv/mergerfs",
+        "var/lib/docker", "var/lib/containers",
+        "var/cache", "var/log",
+        "mnt", "media",
+    }
+    # Priority paths to search first (two-pass strategy for #28)
+    PRIORITY_PATHS = [
+        "root", "home",
+    ]
 
     found_dirs: list[dict] = []
+    scan_stats: dict = {"dirs_searched": 0, "timed_out": False, "method": "unknown"}
 
     def _is_noise(path_str: str) -> bool:
         return any(frag in path_str for frag in NOISE_PATH_FRAGMENTS)
+
+    def _is_heavy_path(path_str: str) -> bool:
+        """Check if path is under a known-heavy directory that never contains gsd-lite projects."""
+        return any(path_str.startswith(h) or f"/{h}" in path_str for h in HEAVY_PATH_EXCLUDES)
+
+    def _get_last_modified(gsd_dir: Path) -> str:
+        """Get last_modified UTC ISO 8601 timestamp for a gsd-lite directory.
+        Prefers WORK.md mtime (updated every session), falls back to newest file in dir."""
+        work_md = gsd_dir / "WORK.md"
+        try:
+            if work_md.exists():
+                mtime = work_md.stat().st_mtime
+            else:
+                # Fallback: most recent mtime of any file in gsd-lite/
+                mtime = 0
+                for f in gsd_dir.iterdir():
+                    if f.is_file():
+                        fmt = f.stat().st_mtime
+                        if fmt > mtime:
+                            mtime = fmt
+                if mtime == 0:
+                    return "unknown"
+            return datetime.fromtimestamp(mtime, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except Exception:
+            return "unknown"
 
     def _get_project_summary(gsd_dir: Path) -> list[str]:
         """Read first ~5 content lines of PROJECT.md for natural-language matching."""
@@ -2569,6 +2611,13 @@ def list_gsd_lite_dirs(
         except Exception:
             return ["(unreadable)"]
 
+    def _rg_glob_args() -> list:
+        """Build ripgrep --glob exclusion args for heavy paths."""
+        args = []
+        for h in HEAVY_PATH_EXCLUDES:
+            args.extend(['--glob', f'!{h}/'])
+        return args
+
     def _try_ripgrep() -> bool:
         """Try to find gsd-lite dirs via ripgrep. Returns True if successful."""
         rg_binary = shutil.which('rg')
@@ -2586,18 +2635,23 @@ def list_gsd_lite_dirs(
         except Exception:
             return False
 
-        for base_dir in ALLOWED_DIRS:
+        scan_stats["method"] = "ripgrep"
+        exclude_globs = _rg_glob_args()
+
+        def _rg_search(base_dir: Path, depth: int) -> None:
+            """Run ripgrep search on a single base directory."""
             if _time.monotonic() - start > TIMEOUT_SECONDS:
-                break
+                scan_stats["timed_out"] = True
+                return
             try:
+                cmd = [
+                    rg_binary, '--files',
+                    '--glob', '**/gsd-lite/PROJECT.md',
+                    f'--max-depth={depth}',
+                    '--no-ignore',
+                ] + exclude_globs + [str(base_dir)]
                 result = subprocess.run(
-                    [
-                        rg_binary, '--files',
-                        '--glob', '**/gsd-lite/PROJECT.md',
-                        f'--max-depth={max_depth}',
-                        '--no-ignore',  # don't skip gitignored dirs
-                        str(base_dir)
-                    ],
+                    cmd,
                     capture_output=True, text=True, timeout=TIMEOUT_SECONDS,
                     check=False
                 )
@@ -2613,23 +2667,49 @@ def list_gsd_lite_dirs(
                         rel = str(gsd_dir)
                     if not _is_noise(rel):
                         found_dirs.append({"path": rel, "abs": str(gsd_dir)})
-            except (subprocess.TimeoutExpired, Exception):
-                continue
+            except subprocess.TimeoutExpired:
+                scan_stats["timed_out"] = True
+            except Exception:
+                pass
+
+        # Two-pass strategy (#28): priority paths first with low depth, then full scan
+        for base_dir in ALLOWED_DIRS:
+            base_str = str(base_dir)
+            # Pass 1: search priority subdirs (home, root) with original depth
+            for prio in PRIORITY_PATHS:
+                prio_dir = base_dir / prio
+                if prio_dir.is_dir():
+                    _rg_search(prio_dir, max_depth)
+
+            # Pass 2: full scan only if pass 1 found nothing
+            if not found_dirs:
+                _rg_search(base_dir, max_depth)
+
         return len(found_dirs) > 0
 
     def _try_python_walk() -> None:
-        """Fallback: os.walk with skip-list."""
+        """Fallback: os.walk with skip-list and heavy path exclusions."""
+        scan_stats["method"] = "os.walk"
         for base_dir in ALLOWED_DIRS:
             for root, dirs, files in os.walk(base_dir):
                 if _time.monotonic() - start > TIMEOUT_SECONDS:
+                    scan_stats["timed_out"] = True
                     return
                 # Depth check
                 depth = str(root).replace(str(base_dir), '').count(os.sep)
                 if depth > max_depth:
                     dirs.clear()
                     continue
-                # Prune junk
-                dirs[:] = [d for d in dirs if d not in SKIP_PATTERNS]
+                # Prune junk and heavy paths
+                try:
+                    rel_root = str(Path(root).relative_to(base_dir))
+                except ValueError:
+                    rel_root = root
+                dirs[:] = [
+                    d for d in dirs
+                    if d not in SKIP_PATTERNS
+                    and not _is_heavy_path(os.path.join(rel_root, d))
+                ]
 
                 current = Path(root)
                 if current.name == "gsd-lite" and (current / "PROJECT.md").exists():
@@ -2647,7 +2727,14 @@ def list_gsd_lite_dirs(
         _try_python_walk()
 
     if not found_dirs:
-        return "No gsd-lite directories found."
+        elapsed = _time.monotonic() - start
+        method = scan_stats["method"]
+        timeout_note = " (search timed out — results may be incomplete)" if scan_stats["timed_out"] else ""
+        return (
+            f"No gsd-lite directories found "
+            f"(searched via {method} in {elapsed:.1f}s, max_depth: {max_depth}){timeout_note}.\n"
+            f"Tip: Try increasing max_depth, or check if gsd-lite exists in deep/excluded paths."
+        )
 
     # Deduplicate by path
     seen = set()
@@ -2666,6 +2753,9 @@ def list_gsd_lite_dirs(
     for d in found_dirs:
         lines.append(f"{d['abs']}")
         if include_meta:
+            # Last modified timestamp (#27)
+            last_mod = _get_last_modified(Path(d["abs"]))
+            lines.append(f"  last_modified: {last_mod}")
             summary_lines = _get_project_summary(Path(d["abs"]))
             for sl in summary_lines:
                 lines.append(f"  {sl}")

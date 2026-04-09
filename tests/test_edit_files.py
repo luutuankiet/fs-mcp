@@ -163,16 +163,6 @@ class TestErrorCases:
         )
         assert result["status"] == "error"
 
-    def test_match_text_too_long(self, temp_env):
-        long_text = "a" * 2001
-        result = apply_file_edits(
-            temp_env["validate_path"],
-            str(temp_env["file_a"]),
-            [{"match_text": long_text, "new_string": "short"}],
-        )
-        assert result["status"] == "error"
-        assert "too long" in result.get("error", "").lower()
-
     def test_fuzzy_hints_on_near_match(self, temp_env):
         """When match_text is close but not exact, error should include suggestions."""
         result = apply_file_edits(

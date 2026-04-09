@@ -45,7 +45,7 @@ jobs:
       #    Required for: multi-platform builds, GHA cache backend, BuildKit features.
       #    Even amd64-only builds benefit from the GHA cache layer.
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       # 4. Build the test image using Dockerfile.test
       #    This Dockerfile:
@@ -58,7 +58,7 @@ jobs:
       #    push: false — we only care about the build+test, not publishing
       #    cache-from/to: uses GitHub Actions cache to speed up rebuilds
       - name: "Build & test (${{ matrix.platform }})"
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.test

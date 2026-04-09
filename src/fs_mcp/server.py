@@ -1477,27 +1477,12 @@ def read_files(
     return "\n\n---\n\n".join(results)
 @mcp.tool()
 def read_media_file(path: str) -> dict:
-    """Read an image or audio file. If IMAGE_RELAY_URL is set, uploads to relay and returns URL.
-    Otherwise falls back to base64. Prefer relative paths."""
+    """Read an image or audio file as base64. Prefer relative paths.
+    Note: For images, prefer read_files() which auto-uploads to image relay when configured."""
     path_obj = validate_path(path)
-    mime_type, _ = mimetypes.guess_type(str(path_obj))
+    mime_type, _ = mimetypes.guess_type(path_obj)
     if not mime_type: mime_type = "application/octet-stream"
-
-    # Try relay first for image files
-    if mime_type.startswith("image/") and IMAGE_RELAY_URL:
-        relay_url = _upload_to_image_relay(path_obj)
-        if relay_url:
-            return {
-                "type": "text",
-                "text": (
-                    f"[Image uploaded to relay]\n"
-                    f"URL: {relay_url}\n"
-                    f"Download: curl -sS -o /tmp/{path_obj.name} {relay_url}\n"
-                    f"Then use your local Read tool to view the downloaded file."
-                )
-            }
-
-    # Fallback: base64 (may break through proxy)
+        
     try:
         with open(path_obj, "rb") as f:
             data = base64.b64encode(f.read()).decode("utf-8")

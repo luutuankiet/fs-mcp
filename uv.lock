@@ -597,7 +597,7 @@ wheels = [
 
 [[package]]
 name = "fs-mcp"
-version = "1.39.4"
+version = "1.40.0"
 source = { editable = "." }
 dependencies = [
     { name = "distro" },

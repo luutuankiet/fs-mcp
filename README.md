@@ -105,7 +105,7 @@ run_command(command="pip install -e '.[dev]'")
 | `list_directory_with_sizes` | Detailed listing with formatted sizes |
 | `list_allowed_directories` | Show security-approved paths |
 | `create_directory` | Create directories |
-| `read_media_file` | Base64 encode images/audio for vision models |
+| `read_media_file` | Read images/audio — auto-uploads to [image relay](https://github.com/luutuankiet/image-relay) when `IMAGE_RELAY_URL` is set, returns download URL instead of base64. Falls back to base64 when relay is not configured. |
 
 ### Analysis
 

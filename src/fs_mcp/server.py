@@ -53,7 +53,7 @@ def _upload_to_image_relay(file_path: Path) -> Optional[str]:
         req = urllib.request.Request(
             f"{IMAGE_RELAY_URL}/upload",
             data=data,
-            headers={"Content-Type": mime_type},
+            headers={"Content-Type": mime_type, "User-Agent": "fs-mcp/image-relay"},
             method="POST"
         )
         with urllib.request.urlopen(req, timeout=30) as resp:

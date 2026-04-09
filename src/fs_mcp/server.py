@@ -33,6 +33,35 @@ from .gemini_compat import make_gemini_compatible
 # --- Token threshold for large file warnings (conservative to enforce grep->read workflow) ---
 LARGE_FILE_TOKEN_THRESHOLD = 20000
 
+# Image relay: upload images to a public relay server instead of returning binary through MCP.
+# Set IMAGE_RELAY_URL env var to enable (e.g. https://img.kenluu.org).
+# When enabled, read_files and read_media_file will upload images to the relay
+# and return a download URL instead of base64 data.
+IMAGE_RELAY_URL = os.environ.get("IMAGE_RELAY_URL", "").rstrip("/")
+IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.ico', '.tiff', '.tif'}
+
+def _upload_to_image_relay(file_path: Path) -> Optional[str]:
+    """Upload an image to the relay server. Returns download URL or None on failure."""
+    if not IMAGE_RELAY_URL:
+        return None
+    try:
+        mime_type, _ = mimetypes.guess_type(str(file_path))
+        if not mime_type:
+            mime_type = "application/octet-stream"
+        with open(file_path, "rb") as f:
+            data = f.read()
+        req = urllib.request.Request(
+            f"{IMAGE_RELAY_URL}/upload",
+            data=data,
+            headers={"Content-Type": mime_type},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode())
+            return result.get("url")
+    except Exception as e:
+        return None
+
 # --- Dynamic Field Descriptions (using imported constants) ---
 MATCH_TEXT_DESCRIPTION = f"""The EXACT text to find and replace (LITERAL, not regex).
 
@@ -1425,7 +1454,20 @@ def read_files(
                             if rtk_warning:
                                 header += f" {rtk_warning}"
                     except UnicodeDecodeError:
-                        content = "Error: Binary file. Use read_media_file."
+                        # Check if it's an image file we can relay
+                        if path_obj.suffix.lower() in IMAGE_EXTENSIONS:
+                            relay_url = _upload_to_image_relay(path_obj)
+                            if relay_url:
+                                content = (
+                                    f"[Image file uploaded to relay]\n"
+                                    f"URL: {relay_url}\n"
+                                    f"Download locally: curl -sS -o /tmp/{path_obj.name} {relay_url}\n"
+                                    f"Then use your local Read tool to view the downloaded file."
+                                )
+                            else:
+                                content = "Error: Binary image file. Relay upload failed or IMAGE_RELAY_URL not set. Use read_media_file."
+                        else:
+                            content = "Error: Binary file. Use read_media_file."
 
                 results.append(f"{header}\n{content}")
 
@@ -1435,11 +1477,27 @@ def read_files(
     return "\n\n---\n\n".join(results)
 @mcp.tool()
 def read_media_file(path: str) -> dict:
-    """Read an image or audio file as base64. Prefer relative paths."""
+    """Read an image or audio file. If IMAGE_RELAY_URL is set, uploads to relay and returns URL.
+    Otherwise falls back to base64. Prefer relative paths."""
     path_obj = validate_path(path)
-    mime_type, _ = mimetypes.guess_type(path_obj)
+    mime_type, _ = mimetypes.guess_type(str(path_obj))
     if not mime_type: mime_type = "application/octet-stream"
-        
+
+    # Try relay first for image files
+    if mime_type.startswith("image/") and IMAGE_RELAY_URL:
+        relay_url = _upload_to_image_relay(path_obj)
+        if relay_url:
+            return {
+                "type": "text",
+                "text": (
+                    f"[Image uploaded to relay]\n"
+                    f"URL: {relay_url}\n"
+                    f"Download: curl -sS -o /tmp/{path_obj.name} {relay_url}\n"
+                    f"Then use your local Read tool to view the downloaded file."
+                )
+            }
+
+    # Fallback: base64 (may break through proxy)
     try:
         with open(path_obj, "rb") as f:
             data = base64.b64encode(f.read()).decode("utf-8")

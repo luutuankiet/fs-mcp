@@ -63,7 +63,7 @@ uvx fs-mcp --no-ui --http-host 0.0.0.0 --http-port 8124 /app
 | Tool | Purpose |
 |------|---------|
 | `grep_content` | Regex search with **section hints** — knows where functions end |
-| `read_files` | Multi-file read with `head`/`tail`, line ranges, `read_to_next_pattern`, or per-file `reads` arrays for multi-slice requests |
+| `read_files` | Multi-file read with `head`/`tail`, line ranges, `read_to_next_pattern`, or per-file `reads` arrays for multi-slice requests. **Image files** (png, jpg, etc.) auto-upload to [image relay](https://github.com/luutuankiet/image-relay) when `IMAGE_RELAY_URL` is set — returns a download URL instead of binary data. |
 | `directory_tree` | Recursive tree explorer: compact text by default (`compact=True`), legacy JSON with `compact=False` |
 | `search_files` | Glob pattern file discovery |
 | `get_file_info` | Metadata + token estimate + chunking recommendations |
@@ -105,7 +105,7 @@ run_command(command="pip install -e '.[dev]'")
 | `list_directory_with_sizes` | Detailed listing with formatted sizes |
 | `list_allowed_directories` | Show security-approved paths |
 | `create_directory` | Create directories |
-| `read_media_file` | Read images/audio — auto-uploads to [image relay](https://github.com/luutuankiet/image-relay) when `IMAGE_RELAY_URL` is set, returns download URL instead of base64. Falls back to base64 when relay is not configured. |
+| `read_media_file` | Base64 encode images/audio for vision models (fallback for non-relay setups) |
 
 ### Analysis
 

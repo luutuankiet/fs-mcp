@@ -37,13 +37,48 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Create GitHub Release with auto-generated notes
+      - name: Generate structured release notes
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          TAG="${{ github.ref_name }}"
+          {
+            if [ -z "$PREV_TAG" ]; then
+              echo "🎉 Initial release"
+            else
+              echo "## What's Changed"
+              echo ""
+              for prefix_label in "feat:✨ Features" "fix:🐛 Bug Fixes" "perf:⚡ Performance" "docs:📖 Documentation"; do
+                prefix="${prefix_label%%:*}"
+                label="${prefix_label#*:}"
+                items=$(git log "$PREV_TAG..$TAG" --format="- %s (%h)" --grep="^${prefix}" 2>/dev/null || true)
+                if [ -n "$items" ]; then
+                  echo "### $label"
+                  echo "$items"
+                  echo ""
+                fi
+              done
+              uncategorized=$(git log "$PREV_TAG..$TAG" --format="- %s (%h)" \
+                --invert-grep --grep="^feat" --grep="^fix" --grep="^perf" --grep="^docs" 2>/dev/null || true)
+              if [ -n "$uncategorized" ]; then
+                echo "### 🔧 Other Changes"
+                echo "$uncategorized"
+                echo ""
+              fi
+              echo "### 📊 Diff Summary"
+              echo '```'
+              git diff --stat "$PREV_TAG..$TAG" | tail -1
+              echo '```'
+              echo ""
+              echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${TAG}"
+            fi
+          } > /tmp/release-body.md
+      - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${{ github.ref_name }}" \
             --title "${{ github.ref_name }}" \
-            --generate-notes
+            --notes-file /tmp/release-body.md
 
   publish:
     runs-on: ubuntu-latest

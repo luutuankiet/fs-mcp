@@ -11,6 +11,9 @@ from datetime import datetime, timezone
 from dataclasses import dataclass
 from pydantic import BaseModel, Field
 from fastmcp import FastMCP
+from fastmcp.utilities.types import Image
+from fastmcp.tools.tool import ToolResult
+from mcp.types import TextContent
 import tempfile
 import time
 import sys
@@ -33,34 +36,9 @@ from .gemini_compat import make_gemini_compatible
 # --- Token threshold for large file warnings (conservative to enforce grep->read workflow) ---
 LARGE_FILE_TOKEN_THRESHOLD = 20000
 
-# Image relay: upload images to a public relay server instead of returning binary through MCP.
-# Set IMAGE_RELAY_URL env var to enable (e.g. https://img.kenluu.org).
-# When enabled, read_files and read_media_file will upload images to the relay
-# and return a download URL instead of base64 data.
-IMAGE_RELAY_URL = os.environ.get("IMAGE_RELAY_URL", "").rstrip("/")
+# Native image support (v1.47+): read_files returns MCP ImageContent blocks for image files.
+# mcpproxy-go v0.23.1+ preserves ImageContent through the proxy chain natively.
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.ico', '.tiff', '.tif'}
-
-def _upload_to_image_relay(file_path: Path) -> Optional[str]:
-    """Upload an image to the relay server. Returns download URL or None on failure."""
-    if not IMAGE_RELAY_URL:
-        return None
-    try:
-        mime_type, _ = mimetypes.guess_type(str(file_path))
-        if not mime_type:
-            mime_type = "application/octet-stream"
-        with open(file_path, "rb") as f:
-            data = f.read()
-        req = urllib.request.Request(
-            f"{IMAGE_RELAY_URL}/upload",
-            data=data,
-            headers={"Content-Type": mime_type, "User-Agent": "fs-mcp/image-relay"},
-            method="POST"
-        )
-        with urllib.request.urlopen(req, timeout=90) as resp:
-            result = json.loads(resp.read().decode())
-            return result.get("url")
-    except Exception as e:
-        return None
 
 # --- Dynamic Field Descriptions (using imported constants) ---
 MATCH_TEXT_DESCRIPTION = f"""The EXACT text to find and replace (LITERAL, not regex).
@@ -793,7 +771,6 @@ EXCLUDED_FROM_CORE = {
     "grounding_search",
     "analyze_gsd_work_log",
     "search_files",
-    "read_media_file",
     "list_allowed_directories",
     "list_directory_with_sizes",
     "get_file_info",
@@ -1220,7 +1197,7 @@ def read_files(
               "⚠️ Set False ONLY when preparing edits — exact match_text requires verbatim content. "
               "Rule of thumb: browsing/exploring = True (default), editing = False.")
     ] = True
-) -> str:
+):
     """
     Read the contents of multiple files simultaneously.
     Returns path and content separated by dashes.
@@ -1488,43 +1465,41 @@ def read_files(
                             if rtk_warning:
                                 header += f" {rtk_warning}"
                     except UnicodeDecodeError:
-                        # Check if it's an image file we can relay
                         if path_obj.suffix.lower() in IMAGE_EXTENSIONS:
-                            relay_url = _upload_to_image_relay(path_obj)
-                            if relay_url:
-                                content = (
-                                    f"[Image file uploaded to relay]\n"
-                                    f"URL: {relay_url}\n"
-                                    f"Download locally: curl -sS -o /tmp/{path_obj.name} {relay_url}\n"
-                                    f"Then use your local Read tool to view the downloaded file."
-                                )
-                            else:
-                                content = "Error: Binary image file. Relay upload failed or IMAGE_RELAY_URL not set. Use read_media_file."
+                            # Native image: return as MCP ImageContent block
+                            mime_type, _ = mimetypes.guess_type(str(path_obj))
+                            results.append(f"{header}\n[Image: {path_obj.name} ({mime_type or 'image/*'})]")
+                            results.append(Image(path=str(path_obj)))
+                            continue
                         else:
-                            content = "Error: Binary file. Use read_media_file."
+                            content = "Error: Binary file (not a supported image format)."
 
                 results.append(f"{header}\n{content}")
 
         except Exception as e:
             results.append(f"File: {file_request.path}\nError: {e}")
 
-    return "\n\n---\n\n".join(results)
-@mcp.tool()
-def read_media_file(path: str) -> dict:
-    """Read an image or audio file as base64. Prefer relative paths.
-    Note: For images, prefer read_files() which auto-uploads to image relay when configured."""
-    path_obj = validate_path(path)
-    mime_type, _ = mimetypes.guess_type(path_obj)
-    if not mime_type: mime_type = "application/octet-stream"
-        
-    try:
-        with open(path_obj, "rb") as f:
-            data = base64.b64encode(f.read()).decode("utf-8")
-        
-        type_category = "image" if mime_type.startswith("image/") else "audio" if mime_type.startswith("audio/") else "blob"
-        return {"type": type_category, "data": data, "mimeType": mime_type}
-    except Exception as e:
-        return {"error": str(e)}
+    # If results contain Image objects, return ToolResult with mixed content blocks.
+    # Returning ToolResult directly bypasses FastMCP's structured_content serialization
+    # which can't handle Image objects in lists (pydantic_core.to_jsonable_python fails).
+    has_images = any(isinstance(r, Image) for r in results)
+    if not has_images:
+        return "\n\n---\n\n".join(results)
+
+    # Build explicit content blocks: TextContent for strings, ImageContent for Images
+    content_blocks = []
+    text_buffer = []
+    for r in results:
+        if isinstance(r, Image):
+            if text_buffer:
+                content_blocks.append(TextContent(type="text", text="\n\n---\n\n".join(text_buffer)))
+                text_buffer = []
+            content_blocks.append(r.to_image_content())
+        else:
+            text_buffer.append(r)
+    if text_buffer:
+        content_blocks.append(TextContent(type="text", text="\n\n---\n\n".join(text_buffer)))
+    return ToolResult(content=content_blocks)
 
 @mcp.tool()
 def write_file(path: str, content: str) -> str:
@@ -1789,7 +1764,7 @@ def get_file_info(path: str) -> str:
         except UnicodeDecodeError:
             info_lines.append(f"\n--- Binary File ---")
             info_lines.append(f"MIME Type: {mime_type or 'application/octet-stream'}")
-            info_lines.append(f"Note: Use read_media_file() for binary content")
+            info_lines.append(f"Note: Image files (.png/.jpg/etc) are supported natively by read_files()")
     
     except Exception as e:
         info_lines.append(f"\nWarning: Could not analyze file content: {e}")

@@ -1215,7 +1215,9 @@ def read_files(
     ] = False,
     compact: Annotated[
         bool,
-        Field(default=True, description="Compressed output (comments stripped, whitespace normalized, 60-90%% token savings). Set False for VERBATIM content when preparing edits (exact match_text required).")
+        Field(default=True, description="Token-optimized output (comments stripped, whitespace normalized). "
+              "⚠️ Set False ONLY when preparing edits — exact match_text requires verbatim content. "
+              "Rule of thumb: browsing/exploring = True (default), editing = False.")
     ] = True
 ) -> str:
     """
@@ -1231,7 +1233,7 @@ def read_files(
     - 60-90%% token savings
 
     **FOR EDITING (compact=False):**
-    When preparing `propose_and_review`, set compact=False to get 
+    When preparing `edit_files`, set compact=False to get 
     EXACT VERBATIM content required for match_text.
 
     **Reading Modes:**
@@ -2146,7 +2148,9 @@ def grep_content(
     ] = None,
     compact: Annotated[
         bool,
-        Field(default=True, description="Compressed grouped results (70-80%% token savings). Set False for full ripgrep output with section end hints (needed for precise line targeting).")
+        Field(default=True, description="Grouped results (70-80%% token savings). "
+              "⚠️ Set False ONLY when you need section end hints for precise line targeting before edit_files. "
+              "Rule of thumb: exploring = True (default), preparing surgical read/edit = False.")
     ] = True
 ) -> str:
     """
@@ -3042,10 +3046,6 @@ async def run_command(
         int,
         Field(default=30, description="Timeout in seconds (1-600).")
     ] = 30,
-    compact: Annotated[
-        bool,
-        Field(default=True, description="Pipe stdout through RTK for token compression. False for exact output.")
-    ] = True,
     background: Annotated[
         bool,
         Field(default=False, description="Run in background, return immediately with job handle. "
@@ -3126,11 +3126,10 @@ async def run_command(
     try:
         actual_command = command
         rtk_rewritten = False
-        if compact:
-            rewritten = _rtk_rewrite_command(command)
-            if rewritten:
-                actual_command = rewritten
-                rtk_rewritten = True
+        rewritten = _rtk_rewrite_command(command)
+        if rewritten:
+            actual_command = rewritten
+            rtk_rewritten = True
 
         proc = subprocess.Popen(
             actual_command,
@@ -3176,7 +3175,7 @@ async def run_command(
 
         # RTK compression (skip if RTK already handled via rewrite)
         rtk_warning = None
-        if compact and stdout and not rtk_rewritten:
+        if stdout and not rtk_rewritten:
             stdout, rtk_warning = _rtk_compress_content(stdout)
 
         # Build output

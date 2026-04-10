@@ -2581,8 +2581,10 @@ def list_gsd_lite_dirs(
         "wheels-v5",  # uv/pip cache
     }
     # Heavy paths that never contain gsd-lite projects — skip on root-mounted servers (#28)
+    # NOTE: "dev" was intentionally REMOVED — it excluded /root/dev/ (common project dir).
+    # System /dev has no regular files, so ripgrep/os.walk skip it naturally.
     HEAVY_PATH_EXCLUDES = {
-        "proc", "sys", "dev", "run", "snap", "tmp",
+        "proc", "sys", "run", "snap", "tmp",
         "srv/dev-disk-by-uuid", "srv/mergerfs",
         "var/lib/docker", "var/lib/containers",
         "var/cache", "var/log",
@@ -2600,8 +2602,16 @@ def list_gsd_lite_dirs(
         return any(frag in path_str for frag in NOISE_PATH_FRAGMENTS)
 
     def _is_heavy_path(path_str: str) -> bool:
-        """Check if path is under a known-heavy directory that never contains gsd-lite projects."""
-        return any(path_str.startswith(h) or f"/{h}" in path_str for h in HEAVY_PATH_EXCLUDES)
+        """Check if path starts with a known-heavy directory (root-level only).
+
+        Previous substring check (f'/{h}' in path) caused false positives:
+        '/dev' matched in 'root/dev/myproject'. Now uses component-based matching
+        so only paths rooted at the heavy dir are excluded."""
+        normalized = path_str.replace(os.sep, "/")
+        for h in HEAVY_PATH_EXCLUDES:
+            if normalized == h or normalized.startswith(h + "/"):
+                return True
+        return False
 
     def _get_last_modified(gsd_dir: Path) -> str:
         """Get last_modified UTC ISO 8601 timestamp for a gsd-lite directory.
@@ -2655,10 +2665,20 @@ def list_gsd_lite_dirs(
             return ["(unreadable)"]
 
     def _rg_glob_args() -> list:
-        """Build ripgrep --glob exclusion args for heavy paths."""
+        """Build ripgrep --glob exclusion args for heavy paths.
+
+        Single-component entries (proc, sys) are root-anchored with leading /
+        so they only exclude at the search root — not nested dirs with the
+        same name. Multi-component entries (var/lib/docker) are already
+        anchored by ripgrep's glob rules (any / in pattern = anchored)."""
         args = []
         for h in HEAVY_PATH_EXCLUDES:
-            args.extend(['--glob', f'!{h}/'])
+            if '/' not in h:
+                # Root-anchor: !/proc/ only excludes <search_root>/proc/
+                args.extend(['--glob', f'!/{h}/'])
+            else:
+                # Already anchored by ripgrep (contains path separator)
+                args.extend(['--glob', f'!{h}/'])
         return args
 
     def _try_ripgrep() -> bool:

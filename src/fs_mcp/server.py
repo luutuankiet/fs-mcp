@@ -395,7 +395,7 @@ def _rtk_compress_content(content: str, file_path: str = "-") -> tuple[str, Opti
         # can detect the language from the suffix (it has no --lang flag).
         # This ensures sliced content is what RTK actually processes,
         # rather than re-reading the full original file from disk.
-        ext = Path(file_path).suffix if file_path != "-" else ""
+        ext = Path(file_path).suffix if file_path != "-" else ".sh"  # Default to shell for command output
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=ext, prefix="rtk_")
         try:
             with os.fdopen(tmp_fd, "w", encoding="utf-8") as tmp_f:
@@ -624,6 +624,29 @@ def _rtk_tree(path: str, max_depth: int, exclude_dirs: Optional[List[str]] = Non
         return None, "RTK binary not found"
     except Exception as e:
         return None, f"RTK tree error: {e}"
+
+
+def _rtk_ls(path: str) -> tuple[Optional[str], Optional[str]]:
+    """Run RTK ls for token-efficient directory listing."""
+    try:
+        result = subprocess.run(
+            [_RTK_PATH, "ls", path],
+            capture_output=True,
+            text=True,
+            timeout=RTK_TIMEOUT_SECONDS,
+        )
+        if result.returncode == 0:
+            return result.stdout, None
+        stderr = result.stderr.strip()
+        if stderr:
+            return None, f"RTK ls failed (exit {result.returncode}): {stderr}"
+        return None, f"RTK ls failed (exit {result.returncode})"
+    except subprocess.TimeoutExpired:
+        return None, f"RTK ls timeout after {RTK_TIMEOUT_SECONDS}s"
+    except FileNotFoundError:
+        return None, "RTK binary not found"
+    except Exception as e:
+        return None, f"RTK ls error: {e}"
 
 
 # --- GSD Reader Auto-Dump ---
@@ -1508,11 +1531,24 @@ def create_directory(path: str) -> str:
     return f"Successfully created directory {path}"
 
 @mcp.tool()
-def list_directory(path: str) -> str:
-    """Get a detailed listing of all files and directories. Prefer relative paths."""
+def list_directory(
+    path: str,
+    compact: bool = True,
+) -> str:
+    """Get a detailed listing of all files and directories. Prefer relative paths.
+
+    compact=True (default): token-efficient output via RTK ls.
+    compact=False: standard [DIR]/[FILE] prefix listing.
+    """
     path_obj = validate_path(path)
     if not path_obj.is_dir(): return f"Error: {path} is not a directory"
-    
+
+    if compact and IS_RTK_AVAILABLE:
+        rtk_output, rtk_error = _rtk_ls(str(path_obj))
+        if rtk_output is not None:
+            return rtk_output
+        # Fallback to standard listing if RTK fails
+
     entries = []
     for entry in path_obj.iterdir():
         prefix = "[DIR]" if entry.is_dir() else "[FILE]"

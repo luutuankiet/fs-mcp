@@ -153,13 +153,18 @@ def test_read_files_rejects_mixed_reads_and_legacy_fields(temp_env):
     assert "reads` cannot be combined with top-level" in result
 
 def test_list_directory(temp_env):
-    """Test directory listing"""
+    """Test directory listing (compact=False for standard format)"""
     (temp_env / "A").mkdir()
     (temp_env / "B.txt").touch()
     
-    res = server.list_directory.fn(str(temp_env))
+    # Standard format (compact=False)
+    res = server.list_directory.fn(str(temp_env), compact=False)
     assert "[DIR] A" in res
     assert "[FILE] B.txt" in res
+
+    # Compact format (default): RTK ls if available, else same as standard
+    res_compact = server.list_directory.fn(str(temp_env), compact=True)
+    assert "A" in res_compact  # dir name always present regardless of format
 
 def test_relative_path_resolution(temp_env):
     """Test that relative paths are resolved correctly."""

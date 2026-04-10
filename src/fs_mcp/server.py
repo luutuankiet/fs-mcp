@@ -3047,6 +3047,11 @@ async def run_command(
         int,
         Field(default=30, description="Timeout in seconds (1-600).")
     ] = 30,
+    compact: Annotated[
+        bool,
+        Field(default=True, description="Pipe stdout through RTK for token compression. "
+              "Set False for exact/raw output (e.g. JSON APIs, binary-encoded data, debugging).")
+    ] = True,
     background: Annotated[
         bool,
         Field(default=False, description="Run in background, return immediately with job handle. "
@@ -3127,10 +3132,11 @@ async def run_command(
     try:
         actual_command = command
         rtk_rewritten = False
-        rewritten = _rtk_rewrite_command(command)
-        if rewritten:
-            actual_command = rewritten
-            rtk_rewritten = True
+        if compact:
+            rewritten = _rtk_rewrite_command(command)
+            if rewritten:
+                actual_command = rewritten
+                rtk_rewritten = True
 
         proc = subprocess.Popen(
             actual_command,
@@ -3176,7 +3182,7 @@ async def run_command(
 
         # RTK compression (skip if RTK already handled via rewrite)
         rtk_warning = None
-        if stdout and not rtk_rewritten:
+        if compact and stdout and not rtk_rewritten:
             stdout, rtk_warning = _rtk_compress_content(stdout)
 
         # Build output

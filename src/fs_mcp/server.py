@@ -3127,10 +3127,16 @@ async def run_command(
     try:
         actual_command = command
         rtk_rewritten = False
-        rewritten = _rtk_rewrite_command(command)
-        if rewritten:
-            actual_command = rewritten
-            rtk_rewritten = True
+
+        # Skip RTK when command redirects stdout to a file — agent wants raw content in the file.
+        # Matches: > /path, >> /path, but NOT 2>&1, >&2, or > /dev/null (discard).
+        _has_file_redirect = bool(re.search(r'[^\d]>{1,2}\s*(?!/dev/)(/|~|\./|\$)', command))
+
+        if not _has_file_redirect:
+            rewritten = _rtk_rewrite_command(command)
+            if rewritten:
+                actual_command = rewritten
+                rtk_rewritten = True
 
         proc = subprocess.Popen(
             actual_command,
@@ -3174,15 +3180,17 @@ async def run_command(
         stdout = stdout or ""
         stderr = stderr or ""
 
-        # RTK compression (skip if RTK already handled via rewrite)
+        # RTK compression (skip if RTK already handled via rewrite, or if output was redirected to file)
         rtk_warning = None
-        if stdout and not rtk_rewritten:
+        if stdout and not rtk_rewritten and not _has_file_redirect:
             stdout, rtk_warning = _rtk_compress_content(stdout)
 
         # Build output
         parts = [f"[exit_code: {proc.returncode}]"]
         if rtk_warning:
             parts.append(f"[rtk: {rtk_warning}]")
+        if (rtk_rewritten or rtk_warning) and not _has_file_redirect:
+            parts.append("[hint: output was token-compressed. For raw: redirect to file, then read_files(compact=false)]")
         if stdout:
             parts.append(f"[stdout]\n{stdout}")
         if stderr:

@@ -460,11 +460,13 @@ def _rtk_rewrite_command(command: str) -> Optional[str]:
             timeout=RTK_REWRITE_TIMEOUT
         )
         
-        if result.returncode == 0:
+        if result.returncode in (0, 3):
+            # Exit 0 = auto-allow, Exit 3 = ask (both have valid rewrites)
+            # In fs-mcp context there's no user to prompt, so treat 3 same as 0.
+            # Exit 1 = no RTK equivalent, Exit 2 = denied → return None
             rewritten = result.stdout.strip()
             return rewritten if rewritten else None
         else:
-            # Exit 1 = no RTK equivalent, Exit 2 = denied, Exit 3 = ask
             return None
             
     except (subprocess.TimeoutExpired, FileNotFoundError, Exception):

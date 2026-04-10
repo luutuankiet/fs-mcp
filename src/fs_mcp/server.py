@@ -760,8 +760,6 @@ def _trigger_gsd_dump(path_obj: Path):
 # These are the tools exposed by default. Pass --all to expose everything.
 CORE_TOOLS = {
     "read_files",
-    "create_directory",
-    "directory_tree",
     "edit_files",
     "grep_content",
     "query_jq",
@@ -772,15 +770,19 @@ CORE_TOOLS = {
     "list_gsd_lite_dirs",
 }
 
-# Tools excluded from core tier (available with --all)
+# Tools excluded from core tier
+# - directory_tree: run_command("tree") + rtk tree gives identical output
+# - create_directory: run_command("mkdir -p") is trivial
 # - write_file: use edit_files for safe editing
 # - propose_and_review: human-in-the-loop editing (use edit_files for direct writes)
 # - commit_review: only needed for propose_and_review review flow
-# - list_directory: use directory_tree or list_directory_with_sizes
+# - list_directory: use run_command("ls") + rtk ls
 # - move_file: rarely needed, potentially destructive
 # - append_text: use edit_files for safe editing
 # - grounding_search: external dependency, not core filesystem operation
 EXCLUDED_FROM_CORE = {
+    "directory_tree",
+    "create_directory",
     "write_file",
     "propose_and_review",
     "commit_review",
@@ -996,7 +998,7 @@ async def check_dependencies(
     return result
 
 
-def initialize(directories: List[str], use_all_tools: bool = False):
+def initialize(directories: List[str], use_all_tools: bool = False):  # use_all_tools kept for programmatic use, removed from CLI
     """Initialize the allowed directories, check for dependencies, and configure tool tier.
     
     Args:
@@ -1094,6 +1096,10 @@ def _apply_tool_tier_filter(use_all_tools: bool):
     
     if tools_to_remove:
         print(f"Tool tier: CORE (excluded: {', '.join(sorted(tools_to_remove))})")
+    
+    # Print version at end of startup — visible after FastMCP's bloated banner
+    from fs_mcp import __version__
+    print(f"fs-mcp v{__version__}")
 
 
 def _apply_gemini_schema_transforms():

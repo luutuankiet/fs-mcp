@@ -9,18 +9,7 @@ from importlib import metadata
 import toml
 from pyfiglet import Figlet
 
-try:
-    # Use importlib.metadata to find the version of the installed package
-    __version__ = metadata.version("fs-mcp")
-except metadata.PackageNotFoundError:
-    # Fallback for when the package is not installed, e.g., in development
-    try:
-        pyproject_path = Path(__file__).parent.parent.parent / 'pyproject.toml'
-        with open(pyproject_path, 'r') as f:
-            data = toml.load(f)
-            __version__ = data['project']['version']
-    except (ImportError, FileNotFoundError, KeyError):
-        __version__ = "unknown"
+from fs_mcp import __version__
 
 def main():
     f = Figlet(font='slant')
@@ -43,11 +32,6 @@ def main():
     http_group.add_argument("--http-host", default="0.0.0.0", help="Host for the background HTTP server.")
     http_group.add_argument("--http-port", type=int, default=8124, help="Port for the background HTTP server.")
 
-    # Tool tier options
-    tier_group = parser.add_argument_group('Tool Tier Options')
-    tier_group.add_argument("--all", action="store_true", dest="use_all_tools",
-                           help="Expose all tools. By default, only core tools are exposed (GSD-Lite optimized).")
-
     # Common args
     parser.add_argument("dirs", nargs="*", help="Allowed directories (applies to all server modes).")
     
@@ -64,8 +48,6 @@ def main():
                 "--host", args.http_host,
                 "--port", str(args.http_port),
             ]
-            if args.use_all_tools:
-                http_cmd.append("--all")
             http_cmd.extend(dirs)
             print(f"🚀 Launching background HTTP MCP server process on http://{args.http_host}:{args.http_port}", file=sys.stderr)
             
@@ -105,7 +87,7 @@ def main():
             # Default: run the original stdio server. This should be a direct import.
             from fs_mcp import server
             print("🚀 Launching Stdio MCP server", file=sys.stderr)
-            server.initialize(dirs, use_all_tools=args.use_all_tools)
+            server.initialize(dirs)
             server.mcp.run()
 
     except KeyboardInterrupt:

@@ -153,7 +153,8 @@ class FileEdit(BaseModel):
 USER_ACCESSIBLE_DIRS: List[Path] = []
 ALLOWED_DIRS: List[Path] = []
 DANGEROUS_SKIP_PERMISSIONS_FLAG = "FS_MCP_FLAG"
-mcp = FastMCP("filesystem", stateless_http=True)
+from fs_mcp import __version__ as _FS_MCP_VERSION
+mcp = FastMCP("filesystem", stateless_http=True, version=_FS_MCP_VERSION)
 IS_VSCODE_CLI_AVAILABLE = False
 IS_RIPGREP_AVAILABLE = False
 IS_JQ_AVAILABLE = False
@@ -1081,7 +1082,7 @@ def _apply_tool_tier_filter(use_all_tools: bool):
     Pass --all to expose everything.
     """
     if use_all_tools:
-        print("Tool tier: ALL (exposing all tools)")
+        print("Tool tier: ALL (exposing all tools)", file=sys.stderr)
         return  # Keep all tools
     
     tool_manager = mcp._tool_manager
@@ -1095,11 +1096,11 @@ def _apply_tool_tier_filter(use_all_tools: bool):
         del tool_manager._tools[tool_name]
     
     if tools_to_remove:
-        print(f"Tool tier: CORE (excluded: {', '.join(sorted(tools_to_remove))})")
+        print(f"Tool tier: CORE (excluded: {', '.join(sorted(tools_to_remove))})", file=sys.stderr)
     
     # Print version at end of startup — visible after FastMCP's bloated banner
-    from fs_mcp import __version__
-    print(f"fs-mcp v{__version__}")
+    # Must be stderr: stdout is the MCP JSON-RPC channel in stdio mode
+    print(f"fs-mcp v{_FS_MCP_VERSION}", file=sys.stderr)
 
 
 def _apply_gemini_schema_transforms():

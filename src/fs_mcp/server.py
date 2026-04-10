@@ -3129,8 +3129,10 @@ async def run_command(
         rtk_rewritten = False
 
         # Skip RTK when command redirects stdout to a file — agent wants raw content in the file.
-        # Matches: > /path, >> /path, but NOT 2>&1, >&2, or > /dev/null (discard).
-        _has_file_redirect = bool(re.search(r'[^\d]>{1,2}\s*(?!/dev/)(/|~|\./|\$)', command))
+        # Strip quoted strings first to avoid false positives on '>' inside quotes.
+        _cmd_unquoted = re.sub(r"'[^']*'", '', command)
+        _cmd_unquoted = re.sub(r'"[^"]*"', '', _cmd_unquoted)
+        _has_file_redirect = bool(re.search(r'>{1,2}\s*/(?!dev/)', _cmd_unquoted))
 
         if not _has_file_redirect:
             rewritten = _rtk_rewrite_command(command)

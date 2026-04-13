@@ -336,8 +336,6 @@ BLOCKED_COMMANDS = {
 
 # Patterns blocked anywhere in the command string
 BLOCKED_PATTERNS = [
-    "> /dev/",
-    ">/dev/",
     "chmod -R 777",
     "chmod 777",
     "mkfs.",
@@ -3011,8 +3009,7 @@ async def run_command(
     command: Annotated[
         str,
         Field(description="Shell command. Supports pipes, redirects, &&, ||. "
-              "Blocked: rm, kill, shutdown, reboot, dd, mkfs. "
-              "Also blocked: writes to /dev/ (e.g. > /dev/null).")
+              "Blocked: rm, kill, shutdown, reboot, dd, mkfs.")
     ],
     working_dir: Annotated[
         str,

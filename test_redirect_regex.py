@@ -20,6 +20,8 @@ assert not has_file_redirect('echo hello'), 'no redirect'
 assert not has_file_redirect('cat file | head'), 'pipe only'
 assert not has_file_redirect('cmd > /dev/null'), 'dev null'
 assert not has_file_redirect('cmd > /dev/zero'), 'dev zero'
+assert not has_file_redirect('cmd 2>&1 > /dev/null'), 'fd redirect then dev null'
+assert not has_file_redirect('cmd >/dev/null 2>&1'), 'dev null then fd redirect'
 assert not has_file_redirect('docker logs 2>&1 | tail'), 'pipe with fd redirect'
 assert not has_file_redirect('echo "> /tmp/fake"'), '> in double quotes path'
 
@@ -64,4 +66,4 @@ assert not has_file_redirect('test $count -gt 5 && echo big'), '-gt not a redire
 assert has_file_redirect('tee /tmp/a.log > /tmp/b.log'), 'tee with redirect'
 assert not has_file_redirect('curl http://api 2>&1 | tee /tmp/log.txt'), 'tee via pipe (no >)'
 
-print('ALL 44 TESTS PASSED')
+print('ALL 46 TESTS PASSED')

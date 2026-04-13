@@ -323,16 +323,6 @@ def _resolve_rtk_path() -> Optional[str]:
     return None
 
 
-# Commands blocked from run_command for safety — matched against first token
-BLOCKED_COMMANDS = {
-    "rm", "rmdir", "rmrf",
-    "mkfs", "dd", "format",
-    "shutdown", "reboot", "halt", "poweroff", "init",
-    "kill", "killall", "pkill",
-    "systemctl",
-    "shred", "wipefs",
-    ":()",  # fork bomb
-}
 
 
 def _rtk_compress_content(content: str, file_path: str = "-") -> tuple[str, Optional[str]]:
@@ -2951,36 +2941,6 @@ def query_duckdb(
 
 # --- Shell Command Execution Tool (Core) ---
 
-def _validate_command_safety(command: str) -> Optional[str]:
-    """Check command against blocked commands/patterns. Returns error message or None if safe."""
-    stripped = command.strip()
-    if not stripped:
-        return "Error: Empty command."
-
-    # Extract first token (the actual binary being called)
-    # Handle: sudo X, env X, bash -c 'X', sh -c 'X'
-    tokens = stripped.split()
-    first_token = tokens[0].lower()
-
-    # Unwrap common wrappers to get the real command
-    idx = 0
-    while idx < len(tokens):
-        t = tokens[idx].lower()
-        if t == "sudo":
-            idx += 1
-            continue
-        if t == "env" and idx + 1 < len(tokens) and "=" in tokens[idx + 1]:
-            idx += 2
-            continue
-        break
-    real_cmd = tokens[idx].lower() if idx < len(tokens) else first_token
-    # Strip path prefix (e.g., /bin/rm -> rm)
-    real_cmd = real_cmd.rsplit("/", 1)[-1]
-
-    if real_cmd in BLOCKED_COMMANDS:
-        return f"Error: Command '{real_cmd}' is blocked for safety. Blocked commands: {', '.join(sorted(BLOCKED_COMMANDS))}"
-
-    return None
 
 
 # --- Background Job Directory ---
@@ -2997,8 +2957,7 @@ def _ensure_job_dir() -> Path:
 async def run_command(
     command: Annotated[
         str,
-        Field(description="Shell command. Supports pipes, redirects, &&, ||. "
-              "Blocked: rm, kill, shutdown, reboot, dd, mkfs.")
+        Field(description="Shell command. Supports pipes, redirects, &&, ||.")
     ],
     working_dir: Annotated[
         str,
@@ -3025,11 +2984,6 @@ async def run_command(
     a log file you can read anytime. Use for long-running tasks that would exceed
     the proxy timeout (~100s).
     """
-    # Safety check
-    safety_error = _validate_command_safety(command)
-    if safety_error:
-        return safety_error
-
     # Validate working directory
     try:
         cwd = validate_path(working_dir)

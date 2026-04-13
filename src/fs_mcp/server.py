@@ -334,12 +334,6 @@ BLOCKED_COMMANDS = {
     ":()",  # fork bomb
 }
 
-# Patterns blocked anywhere in the command string
-BLOCKED_PATTERNS = [
-    "chmod -R 777",
-    "chmod 777",
-    "mkfs.",
-]
 
 def _rtk_compress_content(content: str, file_path: str = "-") -> tuple[str, Optional[str]]:
     """
@@ -2985,11 +2979,6 @@ def _validate_command_safety(command: str) -> Optional[str]:
 
     if real_cmd in BLOCKED_COMMANDS:
         return f"Error: Command '{real_cmd}' is blocked for safety. Blocked commands: {', '.join(sorted(BLOCKED_COMMANDS))}"
-
-    # Check patterns anywhere in command
-    for pattern in BLOCKED_PATTERNS:
-        if pattern in command:
-            return f"Error: Command contains blocked pattern '{pattern}'."
 
     return None
 

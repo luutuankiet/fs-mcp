@@ -1,4 +1,4 @@
-name: Publish to PyPI
+name: Release
 
 on:
   push:
@@ -7,47 +7,15 @@ on:
 
 permissions:
   contents: write
-  id-token: write
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install dependencies
-        run: pip install build twine
-      - name: Verify version matches tag
-        run: |
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          PKG_VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
-            echo "::error::Tag version ($TAG_VERSION) does not match pyproject.toml ($PKG_VERSION). Bump version before tagging."
-            exit 1
-          fi
-      - name: Build
-        run: python -m build
-      - name: Verify package
-        run: twine check dist/*
-      - name: Upload dist artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist
-          path: dist/
-
   release:
     runs-on: ubuntu-latest
-    needs: build
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - name: Verify release notes file exists
         run: |
           NOTES_FILE="releases/${{ github.ref_name }}.md"
@@ -58,27 +26,16 @@ jobs:
           fi
           echo "Found $NOTES_FILE ($(wc -l < $NOTES_FILE) lines)"
 
-      - name: Create GitHub Release from narrative notes file
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "${{ github.ref_name }}" \
-            --title "${{ github.ref_name }}" \
-            --notes-file "releases/${{ github.ref_name }}.md"
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
 
-  publish:
-    runs-on: ubuntu-latest
-    needs: [build, release]
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - name: Download dist artifact
-        uses: actions/download-artifact@v4
+      - name: GoReleaser
+        uses: goreleaser/goreleaser-action@v6
         with:
-          name: dist
-          path: dist/
-      - name: Publish to PyPI (OIDC provenance)
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          skip-existing: true
+          distribution: goreleaser
+          version: latest
+          args: release --clean --release-notes=releases/${{ github.ref_name }}.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

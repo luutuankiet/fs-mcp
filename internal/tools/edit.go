@@ -114,15 +114,24 @@ func editOne(cfg Config, f EditFile) EditFileResult {
 		}
 	}
 
+	// Per-file best-effort: each op is attempted independently, failures are
+	// reported per-op, successful edits still write. Agents pay the retry cost
+	// only for the ops that actually failed — not the whole chain.
+	// Caveat: if op N depends on text introduced by op N-1 and N-1 failed,
+	// N will also fail — the agent's ordering assumption is preserved, we
+	// just don't throw away the unrelated wins.
+	anySuccess := false
 	for _, op := range f.Edits {
 		r := applyOp(&src, &fileExists, op)
 		result.Edits = append(result.Edits, r)
-		if r.Error != "" {
-			// Hard-fail the whole file batch: don't write a partially-corrupt file.
-			return result
+		if r.Error == "" {
+			anySuccess = true
 		}
 	}
 
+	if !anySuccess {
+		return result
+	}
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		result.Error = err.Error()
 		return result
@@ -210,6 +219,6 @@ func applyOp(src *string, exists *bool, op EditOp) EditOpResult {
 func RegisterEdit(s *mcp.Server, cfg Config) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "edit",
-		Description: "Exact find-and-replace in one or more files. Batch: files:[{file_path, edits:[{old_string,new_string,replace_all?}]}]. Sentinels for old_string: \"\" creates file, \"OVERWRITE_FILE\" replaces whole file, \"APPEND_TO_FILE\" appends. Line endings auto-normalize if source is CRLF and pattern is LF. Atomic per file: a failing edit aborts that file's edits and does not write.",
+		Description: "Exact find-and-replace in one or more files. Batch: files:[{file_path, edits:[{old_string,new_string,replace_all?}]}]. Sentinels for old_string: \"\" creates file, \"OVERWRITE_FILE\" replaces whole file, \"APPEND_TO_FILE\" appends. Line endings auto-normalize if source is CRLF and pattern is LF. Per-file best-effort: each edit is attempted independently; successful ones write even if siblings fail; per-op error/mode reported back so the agent retries only what broke. Binary files (files with NUL bytes) reject non-sentinel edits. Writes are atomic (tempfile + rename).",
 	}, editTool(cfg))
 }

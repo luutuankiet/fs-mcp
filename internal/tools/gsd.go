@@ -39,6 +39,11 @@ var gsdHeavyRootDirs = map[string]bool{
 var gsdNoiseFragments = []string{
 	"tests/evals/", "template/gsd-lite", ".opencode/",
 	"wt-npm/", "wheels-v5",
+	// Deep-path excludes that won't be caught by heavy-root first-level skip.
+	// Same-device check alone doesn't help inside one big volume with docker/log spillage.
+	"var/lib/docker/", "var/lib/containers/", "var/lib/snapd/",
+	"var/cache/", "var/log/",
+	"persistent/home/",
 }
 
 type GsdDirsInput struct {

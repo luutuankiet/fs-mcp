@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -11,6 +12,11 @@ import (
 
 	"github.com/luutuankiet/fs-mcp/internal/runtime"
 )
+
+// nanInfRe matches duckdb's bare NaN / Infinity / -Infinity JSON tokens
+// (followed by a JSON delimiter so we don't rewrite quoted strings or
+// column names that happen to spell those words).
+var nanInfRe = regexp.MustCompile(`(-?Infinity|NaN)([,\]\}\s])`)
 
 var duckdbOutputSchema = json.RawMessage(`{"type":"object","properties":{"results":{"type":"array","items":{}},"count":{"type":"integer"},"columns":{"type":"array","items":{"type":"string"}},"timed_out":{"type":"boolean"},"elapsed_ms":{"type":"integer"},"stderr":{"type":"string"}}}`)
 
@@ -54,6 +60,10 @@ func duckdbTool(cfg Config) func(context.Context, *mcp.CallToolRequest, DuckDBIn
 		if body == "" {
 			return nil, out, nil
 		}
+		// DuckDB CLI -json emits bare NaN/Infinity tokens which are not
+		// valid JSON. Sub them to null before Unmarshal so downstream
+		// clients don't choke.
+		body = nanInfRe.ReplaceAllString(body, "null$2")
 		if err := json.Unmarshal([]byte(body), &out.Results); err != nil {
 			return nil, out, fmt.Errorf("duckdb json parse: %v — raw: %s", err, truncate(body, 400))
 		}

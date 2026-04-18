@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -88,11 +89,29 @@ func editOne(cfg Config, f EditFile) EditFileResult {
 
 	var src string
 	var fileExists bool
+	var isBinary bool
 	if body, err := os.ReadFile(p); err == nil {
 		src = string(body)
 		fileExists = true
+		if bytes.IndexByte(body, 0) >= 0 {
+			isBinary = true
+		}
 	} else if !os.IsNotExist(err) {
 		return EditFileResult{FilePath: p, Error: err.Error()}
+	}
+
+	if isBinary {
+		// Binary files may only be touched via sentinels. Normal string-replace
+		// would corrupt them. OVERWRITE_FILE / APPEND_TO_FILE are intent-explicit
+		// so allow those; reject the replace flow.
+		for _, op := range f.Edits {
+			switch op.OldString {
+			case "", sentinelOverwrite, sentinelAppend:
+				continue
+			default:
+				return EditFileResult{FilePath: p, Error: "file contains NUL byte (binary); only \"\", OVERWRITE_FILE, APPEND_TO_FILE sentinels are allowed"}
+			}
+		}
 	}
 
 	for _, op := range f.Edits {
@@ -108,12 +127,29 @@ func editOne(cfg Config, f EditFile) EditFileResult {
 		result.Error = err.Error()
 		return result
 	}
-	if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
+	if err := atomicWriteFile(p, []byte(src)); err != nil {
 		result.Error = err.Error()
 		return result
 	}
 	result.Bytes = len(src)
 	return result
+}
+
+// atomicWriteFile writes via a sibling temp file + rename so a crash mid-write
+// never leaves the destination truncated or partially overwritten.
+func atomicWriteFile(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	tmp := filepath.Join(dir, "."+base+".fs-mcp.tmp")
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func applyOp(src *string, exists *bool, op EditOp) EditOpResult {

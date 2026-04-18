@@ -33,6 +33,8 @@ func Build(opts Options) *mcp.Server {
 	tools.RegisterDirectoryTree(s, cfg)
 	tools.RegisterEdit(s, cfg)
 	tools.RegisterWrite(s, cfg)
+	tools.RegisterListGsdLiteDirs(s, cfg)
+	tools.RegisterDuckDB(s, cfg)
 	return s
 }
 

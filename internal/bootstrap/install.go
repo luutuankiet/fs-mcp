@@ -48,18 +48,19 @@ func Ensure() ([]Status, error) {
 	if !ok {
 		return nil, fmt.Errorf("unsupported platform: %s/%s (linux and darwin only)", runtime.GOOS, runtime.GOARCH)
 	}
+	libc := Libc()
 	bin, err := BinDir()
 	if err != nil {
 		return nil, err
 	}
 	var statuses []Status
 	for _, d := range Manifest() {
-		statuses = append(statuses, ensureOne(d, goos, arch, bin))
+		statuses = append(statuses, ensureOne(d, goos, arch, libc, bin))
 	}
 	return statuses, nil
 }
 
-func ensureOne(d Dep, goos, arch, bin string) Status {
+func ensureOne(d Dep, goos, arch, libc, bin string) Status {
 	managed := filepath.Join(bin, d.Name)
 	st := Status{Name: d.Name, Version: d.Version}
 
@@ -77,7 +78,7 @@ func ensureOne(d Dep, goos, arch, bin string) Status {
 		}
 	}
 	// Install to managed.
-	if err := downloadTo(d, goos, arch, managed); err != nil {
+	if err := downloadTo(d, goos, arch, libc, managed); err != nil {
 		st.Source = "missing"
 		st.Error = err
 		return st
@@ -105,10 +106,10 @@ func versionOK(path string, d Dep) bool {
 	return strings.Contains(string(out), d.VersionContains)
 }
 
-func downloadTo(d Dep, goos, arch, dest string) error {
-	url := d.URL(goos, arch)
+func downloadTo(d Dep, goos, arch, libc, dest string) error {
+	url := d.URL(goos, arch, libc)
 	if url == "" {
-		return fmt.Errorf("no URL for %s %s/%s", d.Name, goos, arch)
+		return fmt.Errorf("no upstream build of %s for %s/%s libc=%s — install manually to $HOME/.local/bin or system PATH", d.Name, goos, arch, libc)
 	}
 	resp, err := http.Get(url)
 	if err != nil {
@@ -136,12 +137,16 @@ func downloadTo(d Dep, goos, arch, dest string) error {
 	case "tar.gz":
 		member := ""
 		if d.Member != nil {
-			member = d.Member(goos, arch)
+			member = d.Member(goos, arch, libc)
 		}
 		if member == "" {
 			return fmt.Errorf("%s: no archive member defined for %s/%s", d.Name, goos, arch)
 		}
 		if err := extractTarGz(resp.Body, member, tmp); err != nil {
+			return fmt.Errorf("%s extract: %w", d.Name, err)
+		}
+	case "gz":
+		if err := extractGz(resp.Body, tmp); err != nil {
 			return fmt.Errorf("%s extract: %w", d.Name, err)
 		}
 	default:
@@ -182,6 +187,21 @@ func extractTarGz(r io.Reader, member, dest string) error {
 			return err
 		}
 	}
+}
+
+func extractGz(r io.Reader, dest string) error {
+	gz, err := gzip.NewReader(r)
+	if err != nil {
+		return err
+	}
+	defer gz.Close()
+	f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o755)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = io.Copy(f, gz)
+	return err
 }
 
 // WirePath prepends the managed bin dir to $PATH so all subprocesses (rg, jq, yq, rtk)

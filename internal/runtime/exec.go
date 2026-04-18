@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -19,6 +20,39 @@ func Run(ctx context.Context, timeout time.Duration, name string, args ...string
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(runCtx, name, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	start := time.Now()
+	err := cmd.Run()
+	res := Result{
+		Stdout:    stdout.String(),
+		Stderr:    stderr.String(),
+		ElapsedMs: time.Since(start).Milliseconds(),
+	}
+	if runCtx.Err() == context.DeadlineExceeded {
+		res.TimedOut = true
+		res.ExitCode = -1
+		return res
+	}
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			res.ExitCode = ee.ExitCode()
+		} else {
+			res.ExitCode = -1
+			if res.Stderr == "" {
+				res.Stderr = err.Error()
+			}
+		}
+	}
+	return res
+}
+
+func RunWithStdin(ctx context.Context, timeout time.Duration, stdin, name string, args ...string) Result {
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(runCtx, name, args...)
+	cmd.Stdin = strings.NewReader(stdin)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

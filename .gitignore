@@ -5,7 +5,8 @@ dist/
 # Editor / IDE
 .opencode
 .planning
-.planning.*/   # v1 planning archive (local only — never commit)
+# v1 planning archive (moved from .planning/; local only, never commit)
+.planning.*/
 
 # Scratch
 tmp/

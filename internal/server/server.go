@@ -23,18 +23,26 @@ type Options struct {
 // large reads/grep responses get clipped at the client's lower default.
 const maxResultSizeChars = 500000
 
-// metaInjector tags every CallToolResult with the maxResultSizeChars hint so
-// the client knows it can take big payloads from these tools.
-func metaInjector(next mcp.MethodHandler) mcp.MethodHandler {
-	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-		res, err := next(ctx, method, req)
-		if ctr, ok := res.(*mcp.CallToolResult); ok && ctr != nil {
-			if ctr.Meta == nil {
-				ctr.Meta = mcp.Meta{}
+// resultDecorator runs after every tool call and tags _meta with two hints:
+//
+//   - anthropic/maxResultSizeChars: 500000 — asks the client to allow large
+//     payloads before truncating (otherwise the default cap clips big reads).
+//   - fs-mcp/portal_root: "<root>" — tells the agent what directory their
+//     relative paths resolve against. Lives in _meta so it stays out of the
+//     content[] / structuredContent body the agent reads as actual data.
+func resultDecorator(portalRoot string) func(mcp.MethodHandler) mcp.MethodHandler {
+	return func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+			res, err := next(ctx, method, req)
+			if ctr, ok := res.(*mcp.CallToolResult); ok && ctr != nil {
+				if ctr.Meta == nil {
+					ctr.Meta = mcp.Meta{}
+				}
+				ctr.Meta["anthropic/maxResultSizeChars"] = maxResultSizeChars
+				ctr.Meta["fs-mcp/portal_root"] = portalRoot
 			}
-			ctr.Meta["anthropic/maxResultSizeChars"] = maxResultSizeChars
+			return res, err
 		}
-		return res, err
 	}
 }
 
@@ -43,7 +51,7 @@ func Build(opts Options) *mcp.Server {
 		Name:    opts.Name,
 		Version: opts.Version,
 	}, nil)
-	s.AddReceivingMiddleware(metaInjector)
+	s.AddReceivingMiddleware(resultDecorator(opts.Root))
 	cfg := tools.Config{Root: opts.Root}
 	tools.RegisterCreateDirectory(s, cfg)
 	tools.RegisterReadFiles(s, cfg)

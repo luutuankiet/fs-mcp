@@ -16,6 +16,36 @@ const (
 	sentinelAppend    = "APPEND_TO_FILE"
 )
 
+// confusableMap normalizes Unicode characters that LLMs systematically emit
+// in place of their ASCII equivalents (curly quotes, em-dash, NBSP, ellipsis,
+// primes). When a literal old_string match fails, the handler retries with
+// confusables substituted; if the normalized form is now unique in the file,
+// the edit proceeds. Mirrors v1.47.3 edit_tool.py:_CONFUSABLE_MAP.
+var confusableMap = map[string]string{
+	"\u2018": "'",   // LEFT SINGLE QUOTATION MARK '
+	"\u2019": "'",   // RIGHT SINGLE QUOTATION MARK '
+	"\u201C": "\"",  // LEFT DOUBLE QUOTATION MARK "
+	"\u201D": "\"",  // RIGHT DOUBLE QUOTATION MARK "
+	"\u2026": "...", // HORIZONTAL ELLIPSIS …
+	"\u2013": "-",   // EN DASH –
+	"\u2014": "--",  // EM DASH —
+	"\u00A0": " ",   // NON-BREAKING SPACE
+	"\u2010": "-",   // HYPHEN ‐
+	"\u2011": "-",   // NON-BREAKING HYPHEN ‑
+	"\u2012": "-",   // FIGURE DASH ‒
+	"\u201A": "'",   // SINGLE LOW-9 QUOTATION MARK ‚
+	"\u201E": "\"",  // DOUBLE LOW-9 QUOTATION MARK „
+	"\u2032": "'",   // PRIME ′
+	"\u2033": "\"",  // DOUBLE PRIME ″
+}
+
+func normalizeConfusables(s string) string {
+	for orig, repl := range confusableMap {
+		s = strings.ReplaceAll(s, orig, repl)
+	}
+	return s
+}
+
 type EditOp struct {
 	OldString  string `json:"old_string" jsonschema:"Exact text to find. Must be unique unless replace_all=true. Sentinels: \"\" creates a new file (errors if it exists); \"OVERWRITE_FILE\" replaces the whole file; \"APPEND_TO_FILE\" appends to end of file."`
 	NewString  string `json:"new_string" jsonschema:"Replacement text. For sentinels, this is the content written / appended."`
@@ -38,10 +68,11 @@ type EditInput struct {
 }
 
 type EditOpResult struct {
-	Mode         string `json:"mode"`
-	Replacements int    `json:"replacements,omitempty"`
-	Normalized   bool   `json:"normalized_line_endings,omitempty"`
-	Error        string `json:"error,omitempty"`
+	Mode             string `json:"mode"`
+	Replacements     int    `json:"replacements,omitempty"`
+	NormalizedCRLF   bool   `json:"normalized_line_endings,omitempty"`
+	NormalizedUnicode bool  `json:"normalized_confusables,omitempty"`
+	Error            string `json:"error,omitempty"`
 }
 
 type EditFileResult struct {
@@ -190,7 +221,8 @@ func applyOp(src *string, exists *bool, op EditOp) EditOpResult {
 
 	old := op.OldString
 	new_ := op.NewString
-	normalized := false
+	crlfNormalized := false
+	confusableNormalized := false
 	count := strings.Count(*src, old)
 	if count == 0 && strings.Contains(*src, "\r\n") && !strings.Contains(old, "\r\n") {
 		altOld := strings.ReplaceAll(old, "\n", "\r\n")
@@ -199,7 +231,25 @@ func applyOp(src *string, exists *bool, op EditOp) EditOpResult {
 			old = altOld
 			new_ = altNew
 			count = alt
-			normalized = true
+			crlfNormalized = true
+		}
+	}
+	// Unicode confusable recovery: LLMs systematically emit smart quotes,
+	// em-dash, NBSP, etc. in place of their ASCII forms. If the literal
+	// old_string misses, retry with a normalized version; only accept it
+	// when the normalized form is uniquely present (or the caller set
+	// replace_all). Mirrors v1.47.3 _try_fuzzy_recover deterministic path.
+	if count == 0 {
+		altOld := normalizeConfusables(old)
+		altNew := normalizeConfusables(new_)
+		if altOld != old {
+			altCount := strings.Count(*src, altOld)
+			if altCount == 1 || (op.ReplaceAll && altCount > 0) {
+				old = altOld
+				new_ = altNew
+				count = altCount
+				confusableNormalized = true
+			}
 		}
 	}
 	if count == 0 {
@@ -213,7 +263,12 @@ func applyOp(src *string, exists *bool, op EditOp) EditOpResult {
 		n = count
 	}
 	*src = strings.Replace(*src, old, new_, n)
-	return EditOpResult{Mode: "replace", Replacements: n, Normalized: normalized}
+	return EditOpResult{
+		Mode:              "replace",
+		Replacements:      n,
+		NormalizedCRLF:    crlfNormalized,
+		NormalizedUnicode: confusableNormalized,
+	}
 }
 
 func RegisterEdit(s *mcp.Server, cfg Config) {

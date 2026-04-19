@@ -14,12 +14,17 @@ type RunCommandInput struct {
 	Command    string `json:"command" jsonschema:"Shell command to execute. Supports pipes, redirects, &&, ||, subshells. Output is auto-compressed via 'rtk' (60-90% token savings). Escape hatch: redirect to a file (e.g. 'cmd > /tmp/out') and the command runs verbatim — then read the file with read_files."`
 	Cwd        string `json:"cwd,omitempty" jsonschema:"Working directory. Defaults to portal root."`
 	TimeoutSec int    `json:"timeout_sec,omitempty" jsonschema:"Timeout in seconds. Default 120."`
+	Background bool   `json:"background,omitempty" jsonschema:"Run detached and return a job handle immediately. Use for commands that would exceed the tool timeout (docker build/compose, long test suites, migrations, dev servers). Output streams to log_path — poll progress with read_files on that path, or tail live via grep_content. Check PID liveness with 'ps -p <pid>'. RTK compression is skipped (raw log file semantics)."`
 }
 
 type RunCommandOutput struct {
 	runtime.Result
 	RtkRewrote   bool   `json:"rtk_rewrote"`
 	RtkSkippedBy string `json:"rtk_skipped_by,omitempty"`
+	Background   bool   `json:"background,omitempty"`
+	JobID        string `json:"job_id,omitempty"`
+	PID          int    `json:"pid,omitempty"`
+	LogPath      string `json:"log_path,omitempty"`
 }
 
 func runCommand(cfg Config) func(context.Context, *mcp.CallToolRequest, RunCommandInput) (*mcp.CallToolResult, RunCommandOutput, error) {
@@ -34,6 +39,31 @@ func runCommand(cfg Config) func(context.Context, *mcp.CallToolRequest, RunComma
 			}
 			cwd = p
 		}
+
+		if in.Background {
+			start := time.Now()
+			job, err := runtime.RunShellBackground(cwd, in.Command)
+			if err != nil {
+				return nil, RunCommandOutput{
+					Result: runtime.Result{
+						ExitCode:  -1,
+						Stderr:    err.Error(),
+						ElapsedMs: time.Since(start).Milliseconds(),
+					},
+					Background:   true,
+					RtkSkippedBy: "background",
+				}, nil
+			}
+			return nil, RunCommandOutput{
+				Result:       runtime.Result{ExitCode: 0, ElapsedMs: time.Since(start).Milliseconds()},
+				Background:   true,
+				JobID:        job.JobID,
+				PID:          job.PID,
+				LogPath:      job.LogPath,
+				RtkSkippedBy: "background",
+			}, nil
+		}
+
 		timeout := time.Duration(in.TimeoutSec) * time.Second
 		if timeout == 0 {
 			timeout = 120 * time.Second
@@ -126,6 +156,6 @@ func hasFileWrite(command string) bool {
 func RegisterRunCommand(s *mcp.Server, cfg Config) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "run_command",
-		Description: "Execute a shell command with pipes/redirects/&&/||. Portal trust: no allowlist, no sandbox. Output is wrapped with `rtk` for token-compressed stdout (60-90% savings). Escape hatch — redirect to a file (`cmd > /tmp/out`, `>>`, `&>`, `2>`, or `| tee`) and the command runs verbatim; then read the file with `read_files`.",
+		Description: "Execute a shell command with pipes/redirects/&&/||. Portal trust: no allowlist, no sandbox. Output is wrapped with `rtk` for token-compressed stdout (60-90% savings). Escape hatch — redirect to a file (`cmd > /tmp/out`, `>>`, `&>`, `2>`, or `| tee`) and the command runs verbatim; then read the file with `read_files`. Set `background=true` to spawn long-running jobs detached — returns {job_id, pid, log_path} immediately and the job survives the tool call.",
 	}, runCommand(cfg))
 }

@@ -172,6 +172,9 @@ func editOne(cfg Config, f EditFile) EditFileResult {
 		return result
 	}
 	result.Bytes = len(src)
+	if isGsdArtifact(p) {
+		triggerGsdDump(p)
+	}
 	return result
 }
 

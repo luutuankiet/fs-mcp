@@ -1,20 +1,16 @@
-# Python-generated files
-__pycache__/
-*.py[oc]
-build/
+# Go build output
+bin/
 dist/
-wheels/
-*.egg-info
 
-# Virtual environments
-.venv
-.python-version
-uv.lockvenv/
-
+# Editor / IDE
 .opencode
 .planning
+# v1 planning archive (moved from .planning/; local only, never commit)
+.planning.*/
 
-tmp
-_test_*.py
-# GSD-Lite project management artifacts (local only)
+# Scratch
+tmp/
+_test_*
+
+# GSD-Lite project management artifacts (local only — never commit to public remote)
 gsd-lite/

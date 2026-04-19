@@ -1,71 +1,95 @@
 ---
-name: gsd:map-codebase
-description: Analyze codebase with parallel mapper agents to produce .planning/codebase/ documents
-argument-hint: "[optional: specific area to map, e.g., 'api' or 'auth']"
-allowed-tools:
-  - Read
-  - Bash
-  - Glob
-  - Grep
-  - Write
-  - Task
+description: Codebase discovery workflow - create ARCHITECTURE.md documenting structure, tech stack, data flow, and entry points
 ---
 
-<objective>
-Analyze existing codebase using parallel gsd-codebase-mapper agents to produce structured codebase documents.
+# Map Codebase Workflow
 
-Each mapper agent explores a focus area and **writes documents directly** to `.planning/codebase/`. The orchestrator only receives confirmations, keeping context usage minimal.
+[SYSTEM: MAP-CODEBASE MODE - Codebase Discovery]
 
-Output: .planning/codebase/ folder with 7 structured documents about the codebase state.
-</objective>
+## Initialization Check
 
-<execution_context>
-@./.claude/get-shit-done/workflows/map-codebase.md
-</execution_context>
+Check if `ARCHITECTURE.md` exists in `gsd-lite/`:
+- If exists: Read it and propose to update/refresh
+- If missing: Create fresh from mapping
 
-<context>
-Focus area: $ARGUMENTS (optional - if provided, tells agents to focus on specific subsystem)
+## Coaching Philosophy
 
-**Load project state if exists:**
-Check for .planning/STATE.md - loads context if project already initialized
+You are a thinking partner. Discover the codebase through exploration, interpret patterns, and document findings. Ask user to clarify purpose when code is ambiguous.
 
-**This command can run:**
-- Before /gsd:new-project (brownfield codebases) - creates codebase map first
-- After /gsd:new-project (greenfield codebases) - updates codebase map as code evolves
-- Anytime to refresh codebase understanding
-</context>
+---
 
-<when_to_use>
-**Use map-codebase for:**
-- Brownfield projects before initialization (understand existing code first)
-- Refreshing codebase map after significant changes
-- Onboarding to an unfamiliar codebase
-- Before major refactoring (understand current state)
-- When STATE.md references outdated codebase info
+## First Turn Protocol
 
-**Skip map-codebase for:**
-- Greenfield projects with no code yet (nothing to map)
-- Trivial codebases (<5 files)
-</when_to_use>
+First turn sequence:
+1. Check if ARCHITECTURE.md exists (silently)
+2. **TALK to user:** "I'm going to map your codebase structure. What should I know before I start exploring?"
+3. Only begin mapping AFTER user provides context
 
-<process>
-1. Check if .planning/codebase/ already exists (offer to refresh or skip)
-2. Create .planning/codebase/ directory structure
-3. Spawn 4 parallel gsd-codebase-mapper agents:
-   - Agent 1: tech focus → writes STACK.md, INTEGRATIONS.md
-   - Agent 2: arch focus → writes ARCHITECTURE.md, STRUCTURE.md
-   - Agent 3: quality focus → writes CONVENTIONS.md, TESTING.md
-   - Agent 4: concerns focus → writes CONCERNS.md
-4. Wait for agents to complete, collect confirmations (NOT document contents)
-5. Verify all 7 documents exist with line counts
-6. Commit codebase map
-7. Offer next steps (typically: /gsd:new-project or /gsd:plan-phase)
-</process>
+---
 
-<success_criteria>
-- [ ] .planning/codebase/ directory created
-- [ ] All 7 codebase documents written by mapper agents
-- [ ] Documents follow template structure
-- [ ] Parallel agents completed without errors
-- [ ] User knows next steps
-</success_criteria>
+## Mapping Process
+
+### Step 1: Discover Project Structure
+
+Use Bash and Glob to understand directory layout:
+- Top-level structure
+- Second level key subdirectories
+- Build semantic understanding: entry points, core logic, infrastructure, support
+
+Ask user if unclear: "I see directories [A], [B], [C]. Is [A] the main application code?"
+
+### Step 2: Identify Tech Stack
+
+Read package manifests (package.json, pyproject.toml, go.mod, Cargo.toml, etc.).
+Extract:
+- Runtime and version
+- Language
+- 2-5 key dependencies that define architecture (NOT utilities)
+
+Ask user: "Which 3-5 dependencies are critical to how this system works?"
+
+### Step 3: Trace Data Flow
+
+Read entry points. Follow the flow:
+1. Where does request/input arrive?
+2. What components process it?
+3. Where does data persist or transform?
+4. How does response/output return?
+
+Use Mermaid diagrams for complex flows, text for simple ones.
+
+### Step 4: Document Entry Points
+
+Identify the 3-5 files that give fastest path to understanding.
+Format as bulleted list with paths and descriptions.
+
+### Step 5: Write ARCHITECTURE.md
+
+Write to `gsd-lite/ARCHITECTURE.md`:
+
+# Architecture
+
+*Mapped: [today's date]*
+
+## Project Structure Overview
+[Table mapping directories to semantic meaning]
+
+## Tech Stack
+[Runtime, language, 2-5 critical dependencies]
+
+## Data Flow
+[Mermaid diagram OR text description]
+
+## Entry Points
+[3-5 files with paths and descriptions]
+
+---
+
+Ask for validation: "Does this capture your codebase structure accurately?"
+
+## Anti-Patterns
+
+- Reading every file (use grep/glob to discover, only read key files)
+- Generic descriptions ("Main code" vs "FastAPI route handlers")
+- Over-documenting (aim for 40-70 lines)
+- Listing all dependencies (focus on 2-5 critical ones)

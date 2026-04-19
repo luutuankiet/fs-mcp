@@ -23,6 +23,7 @@ Previously tracked at `CHANGELOG.md` — retired 2026-04-11 in favor of per-file
 
 | Version | Date | Theme |
 |---|---|---|
+| [v2.0.2](./v2.0.2.md) | 2026-04-19 | `run_command` reaps the entire process group on timeout — no more orphan subprocesses |
 | [v2.0.1](./v2.0.1.md) | 2026-04-19 | `cwd` hint moves into `structuredContent` so the model actually sees it |
 | [v2.0.0](./v2.0.0.md) | 2026-04-19 | Go rewrite, 8-tool core, auto-bootstrap, portal detect, auto-updater, image passthrough, `_meta` decoration |
 | [v1.47.3](./v1.47.3.md) | 2026-04-18 | Lift allowed_dirs restriction — `validate_path` is now a pure resolver |

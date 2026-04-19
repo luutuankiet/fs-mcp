@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"syscall"
+	"time"
 
 	"github.com/luutuankiet/fs-mcp/internal/bootstrap"
 	"github.com/luutuankiet/fs-mcp/internal/portal"
 	"github.com/luutuankiet/fs-mcp/internal/server"
+	"github.com/luutuankiet/fs-mcp/internal/updater"
 )
 
 var version = "dev"
@@ -20,6 +23,7 @@ func main() {
 	showRoot := flag.Bool("print-root", false, "Print detected portal root and exit.")
 	doctor := flag.Bool("doctor", false, "Check and install managed dependencies (jq, yq, rg, rtk), then exit.")
 	skipBootstrap := flag.Bool("skip-bootstrap", false, "Skip the managed-dep check on startup (expert use).")
+	skipUpdate := flag.Bool("skip-update", false, "Skip the self-update check on startup (expert use).")
 	flag.Parse()
 
 	if *showVersion {
@@ -30,6 +34,10 @@ func main() {
 	if *doctor {
 		runDoctor()
 		return
+	}
+
+	if !*skipUpdate && os.Getenv("FS_MCP_NO_AUTO_UPDATE") != "1" {
+		maybeSelfUpdate()
 	}
 
 	if !*skipBootstrap {
@@ -94,6 +102,33 @@ func ensureDeps() error {
 		log.Printf("bootstrap: %s %s %s (%s)", st.Name, st.Version, tag, st.Path)
 	}
 	return nil
+}
+
+// maybeSelfUpdate checks GitHub Releases on cold start. If a newer tag exists,
+// it downloads + atomic-renames the binary in place and re-execs. Any failure
+// is logged and ignored so a broken network never blocks startup. Skipped for
+// dev builds (version=="dev"), when --skip-update is passed, or when the
+// FS_MCP_NO_AUTO_UPDATE=1 env var is set.
+func maybeSelfUpdate() {
+	exePath, err := os.Executable()
+	if err != nil {
+		log.Printf("auto-update: locate executable: %v", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancel()
+	res, _ := updater.CheckAndUpdate(ctx, version, exePath)
+	if res.Updated {
+		log.Printf("auto-update: %s → %s, re-execing", res.FromVersion, res.ToVersion)
+		argv := append([]string{exePath}, os.Args[1:]...)
+		if err := syscall.Exec(exePath, argv, os.Environ()); err != nil {
+			log.Printf("auto-update: re-exec failed (%v) — continuing with the just-replaced binary", err)
+		}
+		return
+	}
+	if res.Skipped != "" {
+		log.Printf("auto-update: %s", res.Skipped)
+	}
 }
 
 func runDoctor() {

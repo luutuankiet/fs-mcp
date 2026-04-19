@@ -11,10 +11,9 @@ import (
 )
 
 type RunCommandInput struct {
-	Command    string `json:"command" jsonschema:"Shell command to execute. Supports pipes, redirects, &&, ||, subshells. Auto-prepended with 'rtk' for token-compressed output (60-90% savings); see Raw flag for the escape hatch."`
+	Command    string `json:"command" jsonschema:"Shell command to execute. Supports pipes, redirects, &&, ||, subshells. Output is auto-compressed via 'rtk' (60-90% token savings). Escape hatch: redirect to a file (e.g. 'cmd > /tmp/out') and the command runs verbatim — then read the file with read_files."`
 	Cwd        string `json:"cwd,omitempty" jsonschema:"Working directory. Defaults to portal root."`
 	TimeoutSec int    `json:"timeout_sec,omitempty" jsonschema:"Timeout in seconds. Default 120."`
-	Raw        bool   `json:"raw,omitempty" jsonschema:"Skip rtk rewrite and return verbatim shell output. Default false. Auto-set when the command writes to a file (>, >>, &>, tee), so binary or large captures land intact."`
 }
 
 type RunCommandOutput struct {
@@ -40,7 +39,7 @@ func runCommand(cfg Config) func(context.Context, *mcp.CallToolRequest, RunComma
 			timeout = 120 * time.Second
 		}
 
-		cmd, rewrote, skipReason := wrapWithRtk(in.Command, in.Raw)
+		cmd, rewrote, skipReason := wrapWithRtk(in.Command)
 		res := runtime.RunShell(ctx, timeout, cwd, cmd)
 		out := RunCommandOutput{
 			Result:       res,
@@ -52,23 +51,19 @@ func runCommand(cfg Config) func(context.Context, *mcp.CallToolRequest, RunComma
 }
 
 // wrapWithRtk prepends `rtk ` to the user command for transparent token
-// compression, mirroring the rtk Claude Code hook behavior. Three escape
-// hatches in priority order:
+// compression, mirroring the rtk Claude Code hook. Two skip rules:
 //
-//  1. Caller passed Raw=true → leave verbatim. ("explicit")
-//  2. Command already starts with `rtk ` → don't double-wrap. ("already-rtk")
-//  3. Command contains an unquoted `>`, `>>`, `&>`, `2>` file redirect or a
+//  1. Command already starts with `rtk ` → don't double-wrap. ("already-rtk")
+//  2. Command contains an unquoted `>`, `>>`, `&>`, `2>` redirect or a
 //     `| tee` pipe → leave verbatim so raw bytes hit the file. ("file-write")
 //
-// rtk has its own per-command passthrough for commands it doesn't know — wrapping
-// is always safe.
-func wrapWithRtk(command string, raw bool) (string, bool, string) {
+// File-write detection IS the escape hatch — agents that need uncompressed
+// output redirect to a file then read it back with read_files. Removing the
+// raw-flag knob keeps the compression contract enforced by default.
+func wrapWithRtk(command string) (string, bool, string) {
 	trimmed := strings.TrimSpace(command)
 	if trimmed == "" {
 		return command, false, ""
-	}
-	if raw {
-		return command, false, "explicit"
 	}
 	if strings.HasPrefix(trimmed, "rtk ") || trimmed == "rtk" {
 		return command, false, "already-rtk"
@@ -131,6 +126,6 @@ func hasFileWrite(command string) bool {
 func RegisterRunCommand(s *mcp.Server, cfg Config) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "run_command",
-		Description: "Execute a shell command with pipes/redirects/&&/||. Portal trust: no allowlist, no sandbox. Default: command is wrapped with `rtk` for token-compressed stdout (60-90% savings). Auto-skip when the command writes to a file (>, >>, &>, 2>, | tee) so raw bytes land intact. Pass raw:true to force verbatim output.",
+		Description: "Execute a shell command with pipes/redirects/&&/||. Portal trust: no allowlist, no sandbox. Output is wrapped with `rtk` for token-compressed stdout (60-90% savings). Escape hatch — redirect to a file (`cmd > /tmp/out`, `>>`, `&>`, `2>`, or `| tee`) and the command runs verbatim; then read the file with `read_files`.",
 	}, runCommand(cfg))
 }

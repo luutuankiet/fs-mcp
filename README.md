@@ -1,6 +1,6 @@
 # fs-mcp v2
 
-**A portal MCP server.** Teleport your AI agent into any directory on any host — and hand it a 9-tool kit that feels like Claude Code's native tools.
+**A portal MCP server.** Teleport your AI agent into any directory on any host — and hand it an 8-tool kit that feels like Claude Code's native tools.
 
 Single static Go binary. ~11 MB. Cold-start under 10 ms. No runtime, no venv, no Docker. Linux + macOS (amd64 & arm64).
 
@@ -12,7 +12,7 @@ Single static Go binary. ~11 MB. Cold-start under 10 ms. No runtime, no venv, no
 
 | v1 (Python) | v2 (Go) |
 |---|---|
-| 23 tools | **9 core tools** |
+| 23 tools | **8 core tools** |
 | 3077-line server.py monolith | Per-tool files, struct-tag schemas |
 | Duplicated docstrings + Pydantic `Field(...)` on every param | **Single source of truth** — struct tags |
 | Responses stringified with `json.dumps(...)` | Native `structuredContent` JSON objects |
@@ -60,18 +60,17 @@ Claude Desktop config:
 }
 ```
 
-## The 9 tools
+## The 8 tools
 
 | Tool | Contract |
 |---|---|
-| `read_files` | `files: [{path, offset?, limit?, tail?, read_to_next_pattern?}]` — batch read, no char cap |
+| `read_files` | `files: [{path, offset?, limit?, tail?, read_to_next_pattern?}]` — batch read, no char cap. Image extensions (png/jpg/jpeg/gif/webp/bmp/ico/tiff ≤ 5 MB) pass through as MCP `ImageContent` for vision models |
 | `grep` | ripgrep. `--no-follow --one-file-system --max-filesize=50M --threads=2`; auto `--max-depth=4` when root is `/` or network FS |
 | `jq` | `{file, expression}` — returns all matches as a JSON array, no 100-line cap |
 | `yq` | Same contract as `jq`. mikefarah's yq; supports yaml/json/xml/toml/csv/tsv/ini/hcl |
-| `run_command` | `sh -c` execution. No allowlist, no sandbox. Portal trust. |
+| `run_command` | `sh -c` execution. No allowlist, no sandbox. Portal trust. Output auto-compressed via `rtk` (60–90% savings); auto-skipped when the command writes to a file (`>`, `>>`, `&>`, `2>`, `\| tee`) so raw bytes land intact |
 | `directory_tree` | Walk. Same depth guards as grep |
-| `edit` | `{file_path, old_string, new_string, replace_all?}` — atomic find-replace. Fails on 0 matches or ambiguous match |
-| `write` | `{file_path, content}` — overwrite/create, auto-mkdir parents |
+| `edit` | `{file_path, old_string, new_string, replace_all?}` — atomic find-replace. Fails on 0 matches or ambiguous match. `old_string` sentinels: `""` creates new file (errors if exists), `"OVERWRITE_FILE"` replaces whole file, `"APPEND_TO_FILE"` appends |
 | `create_directory` | `mkdir -p`, idempotent |
 
 Every response is a native JSON object in `structuredContent` — no stringified nesting.

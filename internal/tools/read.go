@@ -3,13 +3,41 @@ package tools
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// imageExtensions maps lowercase file extensions to MIME type for native image
+// passthrough via MCP ImageContent. Vision-capable models can consume these
+// directly without a base64 detour through the LLM. SVG stays text — XML is
+// more useful read as source than rendered.
+var imageExtensions = map[string]string{
+	".png":  "image/png",
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif":  "image/gif",
+	".webp": "image/webp",
+	".bmp":  "image/bmp",
+	".ico":  "image/x-icon",
+	".tiff": "image/tiff",
+	".tif":  "image/tiff",
+}
+
+// maxImageBytes caps a single image's raw size before refusing to ship it.
+// Base64 inflates ~33%, so 5 MB raw is ~6.7 MB on the wire. Larger images
+// would torpedo the model's context window. Configurable later if needed.
+const maxImageBytes = 5 * 1024 * 1024
+
+func imageMime(path string) (string, bool) {
+	mime, ok := imageExtensions[strings.ToLower(filepath.Ext(path))]
+	return mime, ok
+}
 
 type ReadSlice struct {
 	Offset            int    `json:"offset,omitempty" jsonschema:"1-indexed starting line. 0 = start of file."`
@@ -60,24 +88,56 @@ type ReadFilesOutput struct {
 	Files []ReadFileResult `json:"files"`
 }
 
+// imageBlob carries a successfully-loaded image's raw bytes alongside the
+// MIME type and source path. The handler aggregates these and emits MCP
+// ImageContent blocks alongside the text/JSON output.
+type imageBlob struct {
+	path string
+	mime string
+	data []byte
+}
+
 func readFiles(cfg Config) func(context.Context, *mcp.CallToolRequest, ReadFilesInput) (*mcp.CallToolResult, ReadFilesOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in ReadFilesInput) (*mcp.CallToolResult, ReadFilesOutput, error) {
 		out := ReadFilesOutput{Files: make([]ReadFileResult, 0, len(in.Files))}
+		var images []imageBlob
 		for _, spec := range in.Files {
-			out.Files = append(out.Files, readOne(cfg, spec))
+			r, img := readOne(cfg, spec)
+			out.Files = append(out.Files, r)
+			if img != nil {
+				images = append(images, *img)
+			}
 		}
-		return nil, out, nil
+		if len(images) == 0 {
+			return nil, out, nil
+		}
+		// Mixed content: SDK only auto-mirrors structuredContent → Content[TextContent]
+		// when Content is nil. Once we add ImageContent blocks we own the whole
+		// Content array, so manually marshal the structured output as the leading
+		// TextContent so non-vision clients still see the metadata.
+		outBytes, err := json.Marshal(out)
+		if err != nil {
+			return nil, out, fmt.Errorf("marshal output: %w", err)
+		}
+		content := []mcp.Content{&mcp.TextContent{Text: string(outBytes)}}
+		for _, im := range images {
+			content = append(content, &mcp.ImageContent{Data: im.data, MIMEType: im.mime})
+		}
+		return &mcp.CallToolResult{Content: content}, out, nil
 	}
 }
 
-func readOne(cfg Config, spec ReadFileSpec) ReadFileResult {
+func readOne(cfg Config, spec ReadFileSpec) (ReadFileResult, *imageBlob) {
 	p, err := cfg.ResolvePath(spec.Path)
 	if err != nil {
-		return ReadFileResult{Path: spec.Path, Error: err.Error()}
+		return ReadFileResult{Path: spec.Path, Error: err.Error()}, nil
+	}
+	if mime, ok := imageMime(p); ok {
+		return readImage(p, mime)
 	}
 	lines, err := readAllLines(p)
 	if err != nil {
-		return ReadFileResult{Path: p, Error: err.Error()}
+		return ReadFileResult{Path: p, Error: err.Error()}, nil
 	}
 	total := len(lines)
 
@@ -103,12 +163,12 @@ func readOne(cfg Config, spec ReadFileSpec) ReadFileResult {
 			sr.Truncated = start > 0 || end < total
 			slices = append(slices, sr)
 		}
-		return ReadFileResult{Path: p, TotalLines: total, Slices: slices}
+		return ReadFileResult{Path: p, TotalLines: total, Slices: slices}, nil
 	}
 
 	chosen, start, end, serr := applySlice(lines, spec.Offset, spec.Limit, spec.Tail, spec.ReadToNextPattern)
 	if serr != nil {
-		return ReadFileResult{Path: p, TotalLines: total, Error: serr.Error()}
+		return ReadFileResult{Path: p, TotalLines: total, Error: serr.Error()}, nil
 	}
 	return ReadFileResult{
 		Path:       p,
@@ -118,7 +178,34 @@ func readOne(cfg Config, spec ReadFileSpec) ReadFileResult {
 		EndLine:    end,
 		TotalLines: total,
 		Truncated:  start > 0 || end < total,
+	}, nil
+}
+
+// readImage loads a recognized-extension image and returns both a metadata
+// ReadFileResult (so the structured payload still describes what was read)
+// and a side-channel imageBlob the handler attaches as MCP ImageContent.
+// Files larger than maxImageBytes are refused — base64 inflation would burn
+// too much of the model's context window.
+func readImage(path, mime string) (ReadFileResult, *imageBlob) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return ReadFileResult{Path: path, Error: err.Error()}, nil
 	}
+	if st.Size() > maxImageBytes {
+		return ReadFileResult{
+			Path:    path,
+			Content: fmt.Sprintf("[image %s skipped: %d bytes exceeds %d byte cap]", mime, st.Size(), maxImageBytes),
+			Error:   "image exceeds size cap",
+		}, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ReadFileResult{Path: path, Error: err.Error()}, nil
+	}
+	return ReadFileResult{
+		Path:    path,
+		Content: fmt.Sprintf("[image %s, %d bytes — passed through as MCP ImageContent block]", mime, len(data)),
+	}, &imageBlob{path: path, mime: mime, data: data}
 }
 
 func readAllLines(path string) ([]string, error) {
@@ -185,6 +272,6 @@ func applySlice(lines []string, offset, limit, tail int, pattern string) ([]stri
 func RegisterReadFiles(s *mcp.Server, cfg Config) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "read_files",
-		Description: "Read one or more files. Each file supports offset/limit, tail, or read_to_next_pattern — or a reads[] array of multiple slices from the same file in one call. No character cap.",
+		Description: "Read one or more files. Each file supports offset/limit, tail, or read_to_next_pattern — or a reads[] array of multiple slices from the same file in one call. No character cap. Image files (png/jpg/jpeg/gif/webp/bmp/ico/tiff up to 5 MB) are passed through as MCP ImageContent blocks for vision-capable models; SVG stays text.",
 	}, readFiles(cfg))
 }

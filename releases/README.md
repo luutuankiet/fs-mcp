@@ -23,6 +23,7 @@ Previously tracked at `CHANGELOG.md` — retired 2026-04-11 in favor of per-file
 
 | Version | Date | Theme |
 |---|---|---|
+| [v2.0.0](./v2.0.0.md) | 2026-04-19 | Go rewrite, 8-tool core, auto-bootstrap, portal detect, auto-updater, image passthrough, `_meta` decoration |
 | [v1.47.3](./v1.47.3.md) | 2026-04-18 | Lift allowed_dirs restriction — `validate_path` is now a pure resolver |
 | [v1.47.2](./v1.47.2.md) | 2026-04-13 | Remove run_command blocklists |
 | [v1.47.1](./v1.47.1.md) | 2026-04-11 | Release infra migration to Pattern C (narrative per-file) |

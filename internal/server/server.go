@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -23,13 +24,16 @@ type Options struct {
 // large reads/grep responses get clipped at the client's lower default.
 const maxResultSizeChars = 500000
 
-// resultDecorator runs after every tool call and tags _meta with two hints:
+// resultDecorator runs after every tool call and adds two pieces of metadata:
 //
-//   - anthropic/maxResultSizeChars: 500000 — asks the client to allow large
-//     payloads before truncating (otherwise the default cap clips big reads).
-//   - fs-mcp/portal_root: "<root>" — tells the agent what directory their
-//     relative paths resolve against. Lives in _meta so it stays out of the
-//     content[] / structuredContent body the agent reads as actual data.
+//  1. _meta.anthropic/maxResultSizeChars=500000 — protocol-level hint for
+//     Claude clients to allow large payloads before truncating. The model
+//     never sees this; the client uses it to decide when to clip output.
+//  2. structuredContent.cwd="<portal-root>" — model-visible hint so the
+//     agent always knows what directory its relative paths resolve against.
+//     Injected as a top-level key in the structured payload AND mirrored
+//     into the auto-generated TextContent block, since most clients render
+//     content[] for the model rather than structuredContent.
 func resultDecorator(portalRoot string) func(mcp.MethodHandler) mcp.MethodHandler {
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
@@ -39,9 +43,36 @@ func resultDecorator(portalRoot string) func(mcp.MethodHandler) mcp.MethodHandle
 					ctr.Meta = mcp.Meta{}
 				}
 				ctr.Meta["anthropic/maxResultSizeChars"] = maxResultSizeChars
-				ctr.Meta["fs-mcp/portal_root"] = portalRoot
+				injectCwd(ctr, portalRoot)
 			}
 			return res, err
+		}
+	}
+}
+
+// injectCwd adds {"cwd": portalRoot} as a top-level key in structuredContent
+// and updates any matching TextContent mirror. No-ops cleanly if the result
+// has no structured payload (error results that only carry text, etc.).
+func injectCwd(ctr *mcp.CallToolResult, portalRoot string) {
+	raw, ok := ctr.StructuredContent.(json.RawMessage)
+	if !ok || len(raw) == 0 {
+		return
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return
+	}
+	obj["cwd"] = portalRoot
+	newRaw, err := json.Marshal(obj)
+	if err != nil {
+		return
+	}
+	oldStr := string(raw)
+	ctr.StructuredContent = json.RawMessage(newRaw)
+	for i, c := range ctr.Content {
+		if tc, ok := c.(*mcp.TextContent); ok && tc.Text == oldStr {
+			ctr.Content[i] = &mcp.TextContent{Text: string(newRaw)}
+			return
 		}
 	}
 }

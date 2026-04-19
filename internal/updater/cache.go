@@ -26,15 +26,15 @@ func stateDir() (string, error) {
 	return dir, nil
 }
 
-// cachedLatest is what we persist between cold-starts so we don't slam the
-// GitHub API on every launch. CheckedAt + LatestVersion are enough to skip
-// the network call when the cache is fresh.
+// cachedLatest records the last successfully-fetched tag so the updater has
+// something to fall back on when GitHub is unreachable. It is NO LONGER the
+// primary source of truth — resolveLatest always tries the network first and
+// only reads this cache on failure. CheckedAt is retained for operator
+// debugging (jq the file to see "last time I heard from GitHub").
 type cachedLatest struct {
 	CheckedAt     time.Time `json:"checked_at"`
 	LatestVersion string    `json:"latest_version"`
 }
-
-const cacheTTL = 24 * time.Hour
 
 func cachePath() (string, error) {
 	dir, err := stateDir()
@@ -91,13 +91,6 @@ func pinnedVersion() (string, error) {
 		v = v[:len(v)-1]
 	}
 	return v, nil
-}
-
-func cacheAlive(c cachedLatest) bool {
-	if c.LatestVersion == "" {
-		return false
-	}
-	return time.Since(c.CheckedAt) < cacheTTL
 }
 
 func mustWriteCache(latest string) error {

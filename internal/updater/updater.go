@@ -46,18 +46,29 @@ func CheckAndUpdate(ctx context.Context, currentVersion, exePath string) (Result
 	return Result{Updated: true, FromVersion: currentVersion, ToVersion: latest}, nil
 }
 
-// resolveLatest prefers the daily cache to keep cold-start cost ~zero. It
-// only hits the network when the cache is missing or older than 24 h.
+// fetchLatest is the network side of resolveLatest, extracted to a var so
+// tests can swap it without real HTTP. Production value is fetchLatestTag
+// from github.go; tests assign their own stub.
+var fetchLatest = fetchLatestTag
+
+// resolveLatest always asks GitHub first so fleet-wide releases propagate on
+// the very next restart. The on-disk cache is kept only as an offline fallback
+// for the "GitHub is slow/unreachable" case — never as the primary source of
+// truth. 1.5 s is the worst-case added cold-start latency; see github.go.
 func resolveLatest(ctx context.Context) (string, string, error) {
-	if c, err := readCache(); err == nil && cacheAlive(c) {
-		return c.LatestVersion, "cache", nil
+	tag, err := fetchLatest(ctx)
+	if err == nil {
+		_ = mustWriteCache(tag) // best-effort; stale cache stays if this fails
+		return tag, "github", nil
 	}
-	tag, err := fetchLatestTag(ctx)
-	if err != nil {
-		return "", "", err
+	// Network failed — fall back to whatever we saw last time. No TTL here:
+	// an old cached version is still better than refusing to start the updater
+	// and risking a no-op. `isNewer` in the caller will skip the swap if the
+	// cached tag is ≤ current, so "stale cache == current" is a safe no-op.
+	if c, cerr := readCache(); cerr == nil && c.LatestVersion != "" {
+		return c.LatestVersion, "cache-fallback", nil
 	}
-	_ = mustWriteCache(tag) // best-effort cache write; never block on it
-	return tag, "github", nil
+	return "", "", err
 }
 
 // isNewer compares two semver-ish tags ("v2.0.4" vs "v2.0.3"). Strictly

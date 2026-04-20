@@ -23,6 +23,7 @@ Previously tracked at `CHANGELOG.md` — retired 2026-04-11 in favor of per-file
 
 | Version | Date | Theme |
 |---|---|---|
+| [v2.0.6](./v2.0.6.md) | 2026-04-20 | `run_command` delegates rtk wrap to `rtk rewrite`; adds `compress=false` escape hatch |
 | [v2.0.5](./v2.0.5.md) | 2026-04-19 | Auto-updater drops the 24h cache gate — fleet rollouts land on the next restart |
 | [v2.0.4](./v2.0.4.md) | 2026-04-19 | `run_command` background mode — fire-and-poll via `{job_id, pid, log_path}`, v1 parity |
 | [v2.0.3](./v2.0.3.md) | 2026-04-19 | `edit` auto-pushes `gsd-lite/*.md` to a GSD-Reader server (v1 parity, debounced) |

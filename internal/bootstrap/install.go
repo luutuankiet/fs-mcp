@@ -103,6 +103,13 @@ func resolveTarget(d Dep) targetTag {
 
 func ensureOne(d Dep, goos, arch, libc, bin string, target targetTag) Status {
 	managed := filepath.Join(bin, d.Name)
+	if isSkippedDep(d.Name) {
+		st := Status{Name: d.Name, Path: managed, Source: "skipped (FS_MCP_SKIP_DEPS)"}
+		if cur := currentVersion(managed, d); cur != "" {
+			st.Version = cur
+		}
+		return st
+	}
 	st := Status{Name: d.Name, Version: target.tag}
 
 	if versionOK(managed, d, target.tag) {
@@ -180,6 +187,20 @@ func currentVersion(path string, d Dep) string {
 	}
 	first := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0]
 	return first
+}
+
+// isSkippedDep returns true when the operator has listed the dep name in
+// FS_MCP_SKIP_DEPS (comma-separated). Skipped deps are left entirely alone:
+// no upstream fetch, no download, no swap. Useful when a specific dep's
+// upstream build can't run on the host (e.g. older glibc rejecting modern
+// arm64-gnu builds) — symlink your own binary in and skip the dep.
+func isSkippedDep(name string) bool {
+	for _, n := range strings.Split(os.Getenv("FS_MCP_SKIP_DEPS"), ",") {
+		if strings.TrimSpace(n) == name {
+			return true
+		}
+	}
+	return false
 }
 
 func truncateErr(err error) string {

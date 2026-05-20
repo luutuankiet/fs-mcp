@@ -23,6 +23,7 @@ Previously tracked at `CHANGELOG.md` — retired 2026-04-11 in favor of per-file
 
 | Version | Date | Theme |
 |---|---|---|
+| [v2.0.8](./v2.0.8.md) | 2026-05-20 | Per-dep skip env (`FS_MCP_SKIP_DEPS`) + longer self-update download timeout |
 | [v2.0.7](./v2.0.7.md) | 2026-05-20 | Managed deps auto-upgrade on cold start, with graceful floor fallback |
 | [v2.0.6](./v2.0.6.md) | 2026-04-20 | `run_command` delegates rtk wrap to `rtk rewrite`; adds `compress=false` escape hatch |
 | [v2.0.5](./v2.0.5.md) | 2026-04-19 | Auto-updater drops the 24h cache gate — fleet rollouts land on the next restart |

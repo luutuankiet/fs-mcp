@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const downloadTimeout = 30 * time.Second
+const downloadTimeout = 90 * time.Second
 
 // downloadAndSwap fetches the release tarball for `tag`, extracts the fs-mcp
 // binary, and atomically replaces `exePath`. Linux and macOS both let you

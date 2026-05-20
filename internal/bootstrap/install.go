@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 )
 
 // BinDir returns the managed-binary directory. Creates it if missing.
@@ -34,15 +36,19 @@ func BinDir() (string, error) {
 
 // Status holds the outcome of ensuring one dep.
 type Status struct {
-	Name       string
-	Version    string
-	Path       string
-	Installed  bool // true if we downloaded it this run
-	Source     string // "managed" (our bin dir) or "system" (found on PATH) or "missing"
-	Error      error
+	Name      string
+	Version   string
+	Path      string
+	Installed bool   // true if we downloaded it this run
+	Source    string // "managed" / "system" / "missing" — or "managed (...)" w/ diagnostic suffix
+	Error     error
 }
 
 // Ensure walks the manifest and installs/upgrades as needed. Returns per-dep status.
+//
+// Upstream tag resolution is parallel — all deps query GitHub concurrently,
+// each capped at fetchTagTimeout (see remote.go). Worst-case added cold-start
+// latency is ~fetchTagTimeout regardless of dep count.
 func Ensure() ([]Status, error) {
 	goos, arch, ok := Platform()
 	if !ok {
@@ -53,32 +59,80 @@ func Ensure() ([]Status, error) {
 	if err != nil {
 		return nil, err
 	}
-	var statuses []Status
-	for _, d := range Manifest() {
-		statuses = append(statuses, ensureOne(d, goos, arch, libc, bin))
+
+	manifest := Manifest()
+	targets := make([]targetTag, len(manifest))
+
+	var wg sync.WaitGroup
+	for i := range manifest {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			targets[i] = resolveTarget(manifest[i])
+		}(i)
+	}
+	wg.Wait()
+
+	statuses := make([]Status, len(manifest))
+	for i, d := range manifest {
+		statuses[i] = ensureOne(d, goos, arch, libc, bin, targets[i])
 	}
 	return statuses, nil
 }
 
-func ensureOne(d Dep, goos, arch, libc, bin string) Status {
-	managed := filepath.Join(bin, d.Name)
-	st := Status{Name: d.Name, Version: d.Version}
+// targetTag is the resolved upgrade target for one dep, plus its provenance.
+type targetTag struct {
+	tag    string
+	source string // "upstream" | "floor-pinned" | "floor-fallback"
+}
 
-	if versionOK(managed, d) {
+// resolveTarget asks GitHub for the latest tag of dep.Repo. Falls back to
+// the embedded floor (dep.Version) when the API is unreachable, the repo is
+// unconfigured, or FS_MCP_PIN_DEPS=1 is set (operator override for air-gap
+// or freezing a whole fleet without recutting fs-mcp).
+func resolveTarget(d Dep) targetTag {
+	if d.Repo == "" || os.Getenv("FS_MCP_PIN_DEPS") == "1" {
+		return targetTag{tag: d.Version, source: "floor-pinned"}
+	}
+	ctx := context.Background()
+	if t, err := FetchLatestTag(ctx, d.Repo); err == nil {
+		return targetTag{tag: t, source: "upstream"}
+	}
+	return targetTag{tag: d.Version, source: "floor-fallback"}
+}
+
+func ensureOne(d Dep, goos, arch, libc, bin string, target targetTag) Status {
+	managed := filepath.Join(bin, d.Name)
+	st := Status{Name: d.Name, Version: target.tag}
+
+	if versionOK(managed, d, target.tag) {
 		st.Path = managed
 		st.Source = "managed"
+		if target.source == "floor-fallback" {
+			st.Source = "managed (upstream check failed; pinned to floor)"
+		}
 		return st
 	}
-	// fall back to system PATH (user-installed)
+	// System-PATH fallback (only if it happens to match the target — won't downgrade).
 	if p, err := exec.LookPath(d.Name); err == nil && p != managed {
-		if versionOK(p, d) {
+		if versionOK(p, d, target.tag) {
 			st.Path = p
 			st.Source = "system"
 			return st
 		}
 	}
-	// Install to managed.
-	if err := downloadTo(d, goos, arch, libc, managed); err != nil {
+	// Install / upgrade.
+	if err := downloadTo(d, goos, arch, libc, target.tag, managed); err != nil {
+		// Graceful fallback: keep the existing managed binary if any.
+		// Operator sees a diagnostic Source string AND fs-mcp keeps booting.
+		if _, statErr := os.Stat(managed); statErr == nil {
+			st.Path = managed
+			st.Source = "managed (upgrade to " + target.tag + " failed: " + truncateErr(err) + ")"
+			if cur := currentVersion(managed, d); cur != "" {
+				st.Version = cur
+			}
+			return st
+		}
 		st.Source = "missing"
 		st.Error = err
 		return st
@@ -89,25 +143,55 @@ func ensureOne(d Dep, goos, arch, libc, bin string) Status {
 	return st
 }
 
-func versionOK(path string, d Dep) bool {
+// versionOK runs `path --version` and confirms it matches the expected
+// substring derived from target. Missing path → false; missing VersionContains
+// derivation → true (assumes any present binary is acceptable).
+func versionOK(path string, d Dep, target string) bool {
 	if path == "" {
 		return false
 	}
 	if _, err := os.Stat(path); err != nil {
 		return false
 	}
-	if d.VersionContains == "" {
+	expected := ""
+	if d.VersionContains != nil {
+		expected = d.VersionContains(target)
+	}
+	if expected == "" {
 		return true
 	}
 	out, err := exec.Command(path, d.VerifyFlag).CombinedOutput()
 	if err != nil {
 		return false
 	}
-	return strings.Contains(string(out), d.VersionContains)
+	return strings.Contains(string(out), expected)
 }
 
-func downloadTo(d Dep, goos, arch, libc, dest string) error {
-	url := d.URL(goos, arch, libc)
+// currentVersion reads the first line of `path --version` for display purposes
+// when an upgrade was attempted but failed (so doctor can still report what's
+// actually installed).
+func currentVersion(path string, d Dep) string {
+	if d.VerifyFlag == "" {
+		return ""
+	}
+	out, err := exec.Command(path, d.VerifyFlag).CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	first := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0]
+	return first
+}
+
+func truncateErr(err error) string {
+	s := err.Error()
+	if len(s) > 80 {
+		return s[:77] + "..."
+	}
+	return s
+}
+
+func downloadTo(d Dep, goos, arch, libc, tag, dest string) error {
+	url := d.URL(goos, arch, libc, tag)
 	if url == "" {
 		return fmt.Errorf("no upstream build of %s for %s/%s libc=%s — install manually to $HOME/.local/bin or system PATH", d.Name, goos, arch, libc)
 	}
@@ -137,7 +221,7 @@ func downloadTo(d Dep, goos, arch, libc, dest string) error {
 	case "tar.gz":
 		member := ""
 		if d.Member != nil {
-			member = d.Member(goos, arch, libc)
+			member = d.Member(goos, arch, libc, tag)
 		}
 		if member == "" {
 			return fmt.Errorf("%s: no archive member defined for %s/%s", d.Name, goos, arch)
@@ -158,7 +242,7 @@ func downloadTo(d Dep, goos, arch, libc, dest string) error {
 	if err := os.Rename(tmp, dest); err != nil {
 		return err
 	}
-	log.Printf("bootstrap: installed %s %s → %s", d.Name, d.Version, dest)
+	log.Printf("bootstrap: installed %s %s → %s", d.Name, tag, dest)
 	return nil
 }
 

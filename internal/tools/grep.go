@@ -37,6 +37,7 @@ type GrepInput struct {
 	TimeoutSec      int      `json:"timeout_sec,omitempty" jsonschema:"Timeout in seconds. Default 30."`
 	SectionPatterns []string `json:"section_patterns,omitempty" jsonschema:"Regexes used to compute section_end_hint per match (first line at or after the match that matches any pattern). Pass [] to disable. Default covers Go/Python/JS-TS/Rust/C-family boundaries."`
 	NoSectionHint   bool     `json:"no_section_hint,omitempty" jsonschema:"Disable section_end_hint computation entirely."`
+	IncludeIgnored  bool     `json:"include_ignored,omitempty" jsonschema:"Search inside machine-generated dirs (node_modules, dist, build, target, .venv, __pycache__, .git, .terraform, etc.) AND any .gitignore-excluded paths and hidden files. Off by default — keeps results focused on real source. Turn on when you need to inspect vendored deps or build output."`
 }
 
 type GrepMatch struct {
@@ -80,6 +81,18 @@ func grepTool(cfg Config) func(context.Context, *mcp.CallToolRequest, GrepInput)
 			"--one-file-system",
 			"--max-filesize=50M",
 			"--threads=2",
+		}
+		if in.IncludeIgnored {
+			// Bypass ripgrep's .gitignore + hidden-file defaults. Skip the
+			// static denylist too — caller has explicitly asked for the
+			// noisy paths.
+			args = append(args, "--no-ignore", "--hidden")
+		} else {
+			// Layer the static denylist on top of ripgrep's gitignore
+			// handling. Basename-only globs are safe across multi-repo
+			// roots (matches "node_modules" anywhere, regardless of which
+			// sibling repo it sits in).
+			args = append(args, ignoredDirGlobs()...)
 		}
 		if path == "/" || isNetworkFS(path) {
 			maxDepth := in.MaxDepth
@@ -212,6 +225,6 @@ func parseRgJSON(stdout string, out *GrepOutput) {
 func RegisterGrep(s *mcp.Server, cfg Config) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "grep",
-		Description: "Recursive regex search via ripgrep. Symlink-safe at / and network FS (auto --max-depth=4, --no-follow, --one-file-system, --max-filesize=50M, --threads=2). Each match includes section_end_hint: the first line at or after the match where a section boundary (func/class/def/type/etc.) begins — use it as end_line for a targeted read_files follow-up.",
+		Description: "Recursive regex search via ripgrep. Symlink-safe at / and network FS (auto --max-depth=4, --no-follow, --one-file-system, --max-filesize=50M, --threads=2). Skips machine-generated dirs (node_modules, dist, build, target, .venv, __pycache__, .git, .terraform, etc.) and honors .gitignore by default; set include_ignored=true to scan vendored deps and build output. Each match includes section_end_hint: the first line at or after the match where a section boundary (func/class/def/type/etc.) begins — use it as end_line for a targeted read_files follow-up.",
 	}, grepTool(cfg))
 }

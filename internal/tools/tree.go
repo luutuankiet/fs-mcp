@@ -9,10 +9,11 @@ import (
 )
 
 type DirectoryTreeInput struct {
-	Path      string `json:"path,omitempty" jsonschema:"Directory to walk. Defaults to portal root."`
-	MaxDepth  int    `json:"max_depth,omitempty" jsonschema:"Max recursion depth. Default 3. Auto-capped to 4 when root is '/' or a network FS."`
-	ShowSizes bool   `json:"show_sizes,omitempty" jsonschema:"Include size and mtime per entry."`
-	IncludeFiles bool `json:"include_files,omitempty" jsonschema:"Include files in output (default: only dirs). Default true."`
+	Path           string `json:"path,omitempty" jsonschema:"Directory to walk. Defaults to portal root."`
+	MaxDepth       int    `json:"max_depth,omitempty" jsonschema:"Max recursion depth. Default 3. Auto-capped to 4 when root is '/' or a network FS."`
+	ShowSizes      bool   `json:"show_sizes,omitempty" jsonschema:"Include size and mtime per entry."`
+	IncludeFiles   bool   `json:"include_files,omitempty" jsonschema:"Include files in output (default: only dirs). Default true."`
+	IncludeIgnored bool   `json:"include_ignored,omitempty" jsonschema:"Descend into machine-generated dirs (node_modules, dist, build, target, .venv, __pycache__, .git, .terraform, etc.). Off by default — cuts noise when exploring a project root, especially a multi-repo workspace. Turn on when you need to walk vendored deps or build output."`
 }
 
 type TreeEntry struct {
@@ -75,6 +76,12 @@ func directoryTree(cfg Config) func(context.Context, *mcp.CallToolRequest, Direc
 				}
 				return nil
 			}
+			// Skip universally machine-generated dirs unless caller opted in.
+			// Basename match is repo-agnostic — safe when root contains
+			// multiple sibling repos.
+			if !in.IncludeIgnored && d.IsDir() && depth > 0 && isIgnoredDirName(d.Name()) {
+				return fs.SkipDir
+			}
 			entry := TreeEntry{Path: p, Depth: depth}
 			if d.IsDir() {
 				entry.Type = "dir"
@@ -102,6 +109,6 @@ func directoryTree(cfg Config) func(context.Context, *mcp.CallToolRequest, Direc
 func RegisterDirectoryTree(s *mcp.Server, cfg Config) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "directory_tree",
-		Description: "Recursive directory listing with optional size/mtime. Depth auto-capped at 4 for / and network FS.",
+		Description: "Recursive directory listing with optional size/mtime. Skips machine-generated dirs (node_modules, dist, build, target, .venv, __pycache__, .git, .terraform, etc.) by default — set include_ignored=true to walk them. Depth auto-capped at 4 for / and network FS.",
 	}, directoryTree(cfg))
 }

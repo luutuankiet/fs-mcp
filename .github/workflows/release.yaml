@@ -35,11 +35,15 @@ jobs:
           echo "/usr/local/go/bin" >> "$GITHUB_PATH"
           /usr/local/go/bin/go version
 
-      - name: GoReleaser
-        uses: goreleaser/goreleaser-action@5daf1e915a5f0af01ddbcd89a43b8061ff4f1a89 # v7.2.2
-        with:
-          distribution: goreleaser
-          version: latest
-          args: release --clean --release-notes=releases/${{ github.ref_name }}.md
+      - name: Install GoReleaser (inline — avoid goreleaser-action codeload flake)
+        run: |
+          set -euo pipefail
+          GORELEASER_VERSION=2.16.0
+          curl -fsSL "https://github.com/goreleaser/goreleaser/releases/download/v${GORELEASER_VERSION}/goreleaser_Linux_x86_64.tar.gz" \
+            | sudo tar -C /usr/local/bin -xz goreleaser
+          goreleaser --version
+
+      - name: GoReleaser release
+        run: goreleaser release --clean --release-notes=releases/${{ github.ref_name }}.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -94,6 +94,7 @@ func Build(opts Options) *mcp.Server {
 	tools.RegisterEdit(s, cfg)
 	tools.RegisterListGsdLiteDirs(s, cfg)
 	tools.RegisterDuckDB(s, cfg)
+	tools.RegisterHq(s, cfg)
 	return s
 }
 

@@ -1,6 +1,6 @@
 # fs-mcp v2
 
-**A portal MCP server.** Teleport your AI agent into any directory on any host — and hand it an 8-tool kit that feels like Claude Code's native tools.
+**A portal MCP server.** Teleport your AI agent into any directory on any host — and hand it an 11-tool kit that feels like Claude Code's native tools.
 
 Single static Go binary. ~11 MB. Cold-start under 10 ms. No runtime, no venv, no Docker. Linux + macOS (amd64 & arm64).
 
@@ -12,7 +12,7 @@ Single static Go binary. ~11 MB. Cold-start under 10 ms. No runtime, no venv, no
 
 | v1 (Python) | v2 (Go) |
 |---|---|
-| 23 tools | **8 core tools** |
+| 23 tools | **11 core tools** |
 | 3077-line server.py monolith | Per-tool files, struct-tag schemas |
 | Duplicated docstrings + Pydantic `Field(...)` on every param | **Single source of truth** — struct tags |
 | Responses stringified with `json.dumps(...)` | Native `structuredContent` JSON objects |
@@ -60,7 +60,7 @@ Claude Desktop config:
 }
 ```
 
-## The 8 tools
+## The 11 tools
 
 | Tool | Contract |
 |---|---|
@@ -72,6 +72,9 @@ Claude Desktop config:
 | `directory_tree` | Walk. Same depth guards as grep |
 | `edit` | `{file_path, old_string, new_string, replace_all?}` — atomic find-replace. Fails on 0 matches or ambiguous match. `old_string` sentinels: `""` creates new file (errors if exists), `"OVERWRITE_FILE"` replaces whole file, `"APPEND_TO_FILE"` appends |
 | `create_directory` | `mkdir -p`, idempotent |
+| `query_duckdb` | `{sql}` — DuckDB over CSV/Parquet/JSON via `read_csv_auto`/`read_parquet`/`read_json_auto` in `FROM`; JOIN/window/CTE, no import step |
+| `list_gsd_lite_dirs` | Find `gsd-lite/` project roots under a path; NAS-safe walk (no-follow, one-file-system) |
+| `hq` | `{file, selector?, mode?, attr?, strip?, limit?, max_depth?}` — query HTML with CSS selectors (in-process goquery). `outline` mode maps page structure without dumping HTML; drill with text/attr/html/outer/json/table. `raw` mode + `strip:[]` = escape hatch |
 
 Every response is a native JSON object in `structuredContent` — no stringified nesting.
 

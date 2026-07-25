@@ -11,6 +11,7 @@ import (
 
 	"github.com/luutuankiet/fs-mcp/internal/bootstrap"
 	"github.com/luutuankiet/fs-mcp/internal/portal"
+	"github.com/luutuankiet/fs-mcp/internal/runtime"
 	"github.com/luutuankiet/fs-mcp/internal/server"
 	"github.com/luutuankiet/fs-mcp/internal/updater"
 )
@@ -156,5 +157,14 @@ func runDoctor() {
 		}
 		fmt.Printf("%-8s %-10s %-10s %s\n", st.Name, st.Version, src, st.Path)
 	}
+	// Shell environment snapshot: which shell run_command executes through and
+	// whether the interactive-login env capture succeeded (PATH, nvm, etc.).
+	shell, env := runtime.ShellEnv()
+	_, _, ok := runtime.ShellEnvInfo()
+	mode := "interactive login env captured"
+	if !ok {
+		mode = "capture FAILED — commands run with the server's own env"
+	}
+	fmt.Printf("\n%-8s %s — %s (%d vars)\n", "shell", shell, mode, len(env))
 	os.Exit(exitCode)
 }

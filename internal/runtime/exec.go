@@ -124,9 +124,14 @@ func RunWithStdin(ctx context.Context, timeout time.Duration, stdin, name string
 }
 
 func RunShell(ctx context.Context, timeout time.Duration, cwd, command string) Result {
+	// Resolve the user's shell + interactive env BEFORE starting the timeout
+	// clock — a snapshot refresh (bounded by captureTimeout) must not eat
+	// into the command's own budget.
+	shell, env := ShellEnv()
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(runCtx, "sh", "-c", command)
+	cmd := exec.CommandContext(runCtx, shell, "-c", command)
+	cmd.Env = env
 	cmd.SysProcAttr = pgidAttr
 	if cwd != "" {
 		cmd.Dir = cwd
@@ -193,7 +198,9 @@ func RunShellBackground(cwd, command string) (BackgroundJob, error) {
 		return BackgroundJob{}, fmt.Errorf("open log: %w", err)
 	}
 
-	cmd := exec.Command("sh", "-c", command)
+	shell, env := ShellEnv()
+	cmd := exec.Command(shell, "-c", command)
+	cmd.Env = env
 	cmd.SysProcAttr = sidAttr
 	if cwd != "" {
 		cmd.Dir = cwd

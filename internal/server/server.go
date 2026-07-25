@@ -50,6 +50,69 @@ func resultDecorator(portalRoot string) func(mcp.MethodHandler) mcp.MethodHandle
 	}
 }
 
+// schemaDecorator amends tools/list responses so every declared output schema
+// also advertises the "cwd" property that resultDecorator injects into every
+// structured result. Advertisement and injection live in the same file on
+// purpose — a client that validates structuredContent against the advertised
+// schema would otherwise see an undeclared extra key on every single call.
+func schemaDecorator() func(mcp.MethodHandler) mcp.MethodHandler {
+	return func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+			res, err := next(ctx, method, req)
+			if ltr, ok := res.(*mcp.ListToolsResult); ok && ltr != nil {
+				for i, t := range ltr.Tools {
+					if amended, changed := addCwdToSchema(t.OutputSchema); changed {
+						// Shallow-copy so the server's internal Tool (used for
+						// output validation) is never mutated.
+						tc := *t
+						tc.OutputSchema = amended
+						ltr.Tools[i] = &tc
+					}
+				}
+			}
+			return res, err
+		}
+	}
+}
+
+// addCwdToSchema returns schema with properties.cwd added. Handles any
+// representation (json.RawMessage, *jsonschema.Schema, map) by round-tripping
+// through JSON. Returns changed=false when there is nothing to amend: nil
+// schema, a non-object schema, or cwd already declared.
+func addCwdToSchema(schema any) (json.RawMessage, bool) {
+	if schema == nil {
+		return nil, false
+	}
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		return nil, false
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil, false
+	}
+	if t, _ := obj["type"].(string); t != "" && t != "object" {
+		return nil, false
+	}
+	props, _ := obj["properties"].(map[string]any)
+	if props == nil {
+		props = map[string]any{}
+	}
+	if _, exists := props["cwd"]; exists {
+		return nil, false
+	}
+	props["cwd"] = map[string]any{
+		"type":        "string",
+		"description": "Portal root the server resolves relative paths against (injected into every structured result).",
+	}
+	obj["properties"] = props
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return nil, false
+	}
+	return json.RawMessage(out), true
+}
+
 // injectCwd adds {"cwd": portalRoot} as a top-level key in structuredContent
 // and updates any matching TextContent mirror. No-ops cleanly if the result
 // has no structured payload (error results that only carry text, etc.).
@@ -83,6 +146,7 @@ func Build(opts Options) *mcp.Server {
 		Version: opts.Version,
 	}, nil)
 	s.AddReceivingMiddleware(resultDecorator(opts.Root))
+	s.AddReceivingMiddleware(schemaDecorator())
 	cfg := tools.Config{Root: opts.Root}
 	tools.RegisterCreateDirectory(s, cfg)
 	tools.RegisterReadFiles(s, cfg)
